@@ -1,0 +1,32 @@
+scan:
+  paths:
+    - /mnt/nas2/Music
+  extensions:
+    - .flac
+    - .mp3
+    - .m4a
+    - .ogg
+  workers: 8
+  follow_symlinks: false
+
+database:
+  path: ~/.local/share/soundaudit/scan.db
+
+resolvers:
+  musicbrainz:
+    rate_limit: 1.0  # seconds between requests
+    retry_count: 3
+
+fingerprinting:
+  enabled: true
+  fpcalc_path: /usr/bin/fpcalc
+  cache_only: false  # if true, skip unknown files (useful for resume)
+
+reporting:
+  include_spectrograms: false
+  min_similarity_for_duplicates: 0.95
+
+actuator:
+  dry_run: true
+  backup_before_write: true
+  rename_template: "{artist}/{album} [{year}]/{disc:02d}-{track:02d}. {title}.flac"

@@ -1,0 +1,181 @@
+"""Extract metadata from audio files using mutagen."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from mutagen import MutagenError
+from mutagen.aac import AAC
+from mutagen.aiff import AIFF
+from mutagen.apev2 import APEv2File
+from mutagen.flac import FLAC, Picture
+from mutagen.mp3 import MP3
+from mutagen.mp4 import MP4
+from mutagen.oggvorbis import OggVorbis
+from mutagen.wave import WAVE
+
+from soundaudit.models import AudioFormat, AudioSignature, FileInfo, TrackTags
+
+
+def extract_file_info(path: Path) -> FileInfo:
+    """Read all metadata from a single audio file."""
+    stat = path.stat()
+    suffix = path.suffix.lower()
+
+    # Map extension to mutagen class and our enum
+    class_and_format = _MUTAGEN_MAP.get(suffix)
+    if class_and_format is None:
+        return FileInfo(
+            path=path,
+            size_bytes=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            format=AudioFormat.UNKNOWN,
+            tags=TrackTags(),
+        )
+
+    mutagen_cls, fmt, lossless = class_and_format
+
+    try:
+        audio = mutagen_cls(str(path))
+    except MutagenError:
+        # Corrupt or unsupported — return minimal info
+        return FileInfo(
+            path=path,
+            size_bytes=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            format=fmt,
+            lossless=lossless,
+            tags=TrackTags(),
+            is_corrupt=True,
+            corruption_reason="MutagenError: unable to read file",
+        )
+
+    # Stream info
+    info = audio.info
+    file_info = FileInfo(
+        path=path,
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        format=fmt,
+        sample_rate_hz=getattr(info, "sample_rate", None),
+        bit_depth=getattr(info, "bits_per_sample", None),
+        channels=getattr(info, "channels", None),
+        bitrate_kbps=round(getattr(info, "bitrate", 0) / 1000) if hasattr(info, "bitrate") else None,
+        duration_seconds=getattr(info, "length", None),
+        lossless=lossless,
+        tags=_extract_tags(audio),
+    )
+
+    # Cover art size (for FLAC)
+    if isinstance(audio, FLAC):
+        pics = audio.pictures
+        if pics:
+            pic = pics[0]
+            file_info.tags.cover_mime_type = pic.mime
+            file_info.tags.cover_size_bytes = len(pic.data)
+
+    # Compute MD5 of entire file (content hash for change detection)
+    file_info.signature = _compute_signature(path)
+
+    return file_info
+
+
+def _extract_tags(audio) -> TrackTags:
+    """Extract tags from a mutagen audio object."""
+    tags = TrackTags()
+
+    def _get(*keys: str) -> str | None:
+        for k in keys:
+            val = audio.get(k)
+            if val:
+                return str(val[0]) if isinstance(val, list) else str(val)
+        return None
+
+    # FLAC/Ogg uses "TITLE", MP3 uses "TIT2", MP4 uses "\xa9nam"
+    tags.title = _get("TITLE", "TIT2", "\xa9nam")
+    tags.artist = _get("ARTIST", "TPE1", "\xa9ART")
+    tags.album = _get("ALBUM", "TALB", "\xa9alb")
+    tags.album_artist = _get("ALBUMARTIST", "TPE2", "aART")
+    tags.genre = _get("GENRE", "TCON", "\xa9gen")
+    tags.year = _parse_int(_get("DATE", "TYER", "TDRC", "\xa9day"))
+    tags.isrc = _get("ISRC", "TSRC")
+    tags.comment = _get("COMMENT", "COMM", "\xa9cmt")
+    tags.lyrics = _get("LYRICS", "USLT", "\xa9lyr")
+    tags.publisher = _get("LABEL", "TPUB", "\xa9pub")
+    tags.composer = _get("COMPOSER", "TCOM", "\xa9wrt")
+
+    tags.track_number = _parse_track(_get("TRACKNUMBER", "TRCK"))
+    tags.track_total = _parse_track_total(_get("TRACKNUMBER", "TRCK", "TRACKTOTAL"))
+    tags.disc_number = _parse_track(_get("DISCNUMBER", "TPOS"))
+    tags.disc_total = _parse_track_total(_get("DISCNUMBER", "TPOS", "DISCTOTAL"))
+
+    # ReplayGain
+    tags.replaygain_track_gain = _parse_rg(_get("REPLAYGAIN_TRACK_GAIN"))
+    tags.replaygain_track_peak = _parse_rg(_get("REPLAYGAIN_TRACK_PEAK"))
+    tags.replaygain_album_gain = _parse_rg(_get("REPLAYGAIN_ALBUM_GAIN"))
+    tags.replaygain_album_peak = _parse_rg(_get("REPLAYGAIN_ALBUM_PEAK"))
+
+    return tags
+
+
+# Extension -> (mutagen_class, AudioFormat, is_lossless)
+_MUTAGEN_MAP: dict[str, tuple] = {
+    ".flac": (FLAC, AudioFormat.FLAC, True),
+    ".mp3": (MP3, AudioFormat.MP3, False),
+    ".m4a": (MP4, AudioFormat.M4A, False),
+    ".ogg": (OggVorbis, AudioFormat.OGG, True),
+    ".wav": (WAVE, AudioFormat.WAV, True),
+    ".ape": (APEv2File, AudioFormat.UNKNOWN, True),
+    ".wv": (APEv2File, AudioFormat.UNKNOWN, True),
+    ".aiff": (AIFF, AudioFormat.UNKNOWN, True),
+    ".aac": (AAC, AudioFormat.UNKNOWN, False),
+}
+
+
+def _compute_signature(path: Path) -> AudioSignature:
+    import hashlib
+
+    md5 = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            md5.update(chunk)
+    return AudioSignature(md5_content=md5.hexdigest())
+
+
+def _parse_int(v: str | None) -> int | None:
+    if not v:
+        return None
+    try:
+        return int(v.split("-")[0].split("/")[0])
+    except ValueError:
+        return None
+
+
+def _parse_track(v: str | None) -> int | None:
+    """Handle '3/12' form."""
+    if not v:
+        return None
+    try:
+        return int(v.split("/")[0])
+    except ValueError:
+        return None
+
+
+def _parse_track_total(v: str | None) -> int | None:
+    if not v:
+        return None
+    try:
+        parts = v.split("/")
+        return int(parts[1]) if len(parts) > 1 else None
+    except (ValueError, IndexError):
+        return None
+
+
+def _parse_rg(v: str | None) -> float | None:
+    if not v:
+        return None
+    try:
+        # Strip ' dB'
+        return float(v.replace(" dB", "").strip())
+    except ValueError:
+        return None
