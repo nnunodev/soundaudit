@@ -14,10 +14,10 @@ from mutagen.mp4 import MP4
 from mutagen.oggvorbis import OggVorbis
 from mutagen.wave import WAVE
 
-from soundaudit.models import AudioFormat, AudioSignature, FileInfo, TrackTags
+from soundaudit.models import AudioFormat, AudioSignature, FileInfo, HashStrategy, TrackTags
 
 
-def extract_file_info(path: Path) -> FileInfo:
+def extract_file_info(path: Path, *, hash_strategy: HashStrategy = HashStrategy.HEAD_ONLY) -> FileInfo:
     """Read all metadata from a single audio file."""
     stat = path.stat()
     suffix = path.suffix.lower()
@@ -74,8 +74,9 @@ def extract_file_info(path: Path) -> FileInfo:
             file_info.tags.cover_mime_type = pic.mime
             file_info.tags.cover_size_bytes = len(pic.data)
 
-    # Compute MD5 of entire file (content hash for change detection)
-    file_info.signature = _compute_signature(path)
+    # Compute content hash according to strategy
+    if hash_strategy != HashStrategy.NONE:
+        file_info.signature = _compute_signature(path, hash_strategy)
 
     return file_info
 
@@ -86,9 +87,12 @@ def _extract_tags(audio) -> TrackTags:
 
     def _get(*keys: str) -> str | None:
         for k in keys:
-            val = audio.get(k)
-            if val:
-                return str(val[0]) if isinstance(val, list) else str(val)
+            try:
+                val = audio.get(k)
+                if val:
+                    return str(val[0]) if isinstance(val, list) else str(val)
+            except (ValueError, KeyError, TypeError):
+                continue
         return None
 
     # FLAC/Ogg uses "TITLE", MP3 uses "TIT2", MP4 uses "\xa9nam"
@@ -132,14 +136,31 @@ _MUTAGEN_MAP: dict[str, tuple] = {
 }
 
 
-def _compute_signature(path: Path) -> AudioSignature:
-    import hashlib
+def _compute_signature(path: Path, strategy: HashStrategy) -> AudioSignature:
+    import xxhash
 
-    md5 = hashlib.md5()
+    h = xxhash.xxh3_64()
     with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            md5.update(chunk)
-    return AudioSignature(md5_content=md5.hexdigest())
+        if strategy == HashStrategy.HEAD_ONLY:
+            h.update(f.read(1048576))
+        elif strategy == HashStrategy.HEAD_TAIL:
+            h.update(f.read(1048576))
+            f.seek(0, 2)
+            size = f.tell()
+            if size > 2097152:
+                f.seek(size - 1048576)
+                h.update(f.read(1048576))
+        elif strategy == HashStrategy.FULL:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        else:
+            raise ValueError(f"Unknown hash strategy: {strategy}")
+
+    suffix = f"+{strategy.value}" if strategy != HashStrategy.FULL else ""
+    return AudioSignature(
+        content_hash=h.hexdigest(),
+        hash_algo=f"xxhash3_64{suffix}",
+    )
 
 
 def _parse_int(v: str | None) -> int | None:

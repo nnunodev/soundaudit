@@ -13,6 +13,7 @@ from rich.table import Table
 from soundaudit._version import __version__
 from soundaudit.config import AppConfig
 from soundaudit.db.store import Database
+from soundaudit.models import HashStrategy
 from soundaudit.scanner.walker import scan_directory
 
 app = typer.Typer(
@@ -36,6 +37,11 @@ def scan_cmd(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
     db: Path | None = typer.Option(None, "--db", help="SQLite database path"),
     workers: int = typer.Option(4, "--workers", "-j", help="Parallel workers", min=1, max=32),
+    hash_strategy: str = typer.Option(
+        "head-only",
+        "--hash-strategy",
+        help="Content hash strategy: head-only (default), head-tail, full, none",
+    ),
     fingerprint: bool = typer.Option(False, "--fingerprint", help="Compute AcoustID fingerprints"),
 ) -> None:
     """Scan audio files and store metadata in the database."""
@@ -43,6 +49,11 @@ def scan_cmd(
     if db:
         cfg.database.path = str(db)
     cfg.scan.workers = workers
+    try:
+        cfg.scan.hash_strategy = HashStrategy(hash_strategy)
+    except ValueError:
+        console.print(f"[red]Invalid hash strategy: {hash_strategy}. Use: head-only, head-tail, full, none[/red]")
+        raise typer.Exit(1)
     cfg.fingerprinting.enabled = fingerprint
 
     database = Database(str(cfg.database.resolved()))
@@ -63,6 +74,7 @@ def scan_cmd(
                 raise typer.Exit(1)
 
             console.print(f"[bold cyan]Scanning {root} ...[/bold cyan]")
+            console.print(f"[dim]  hash strategy: {cfg.scan.hash_strategy.value}[/dim]")
             count = 0
             for info in scan_directory(
                 root,
@@ -70,6 +82,7 @@ def scan_cmd(
                 workers=cfg.scan.workers,
                 existing=existing,
                 progress=progress,
+                hash_strategy=cfg.scan.hash_strategy,
             ):
                 database.upsert_file(info)
                 count += 1

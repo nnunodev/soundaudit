@@ -10,7 +10,7 @@ from pathlib import Path
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from soundaudit.models import FileInfo
+from soundaudit.models import FileInfo, HashStrategy
 from soundaudit.scanner.extractor import extract_file_info
 
 
@@ -38,6 +38,7 @@ def scan_directory(
     workers: int = 4,
     existing: dict[str, str] | None = None,
     progress: Progress | None = None,
+    hash_strategy: HashStrategy = HashStrategy.HEAD_ONLY,
 ) -> Iterator[FileInfo]:
     """Yield FileInfo for each discovered audio file, using parallel extraction."""
     extensions = extensions or DEFAULT_EXTENSIONS
@@ -68,15 +69,14 @@ def scan_directory(
 
     def process(p: Path) -> FileInfo | None:
         try:
-            info = extract_file_info(p)
+            info = extract_file_info(p, hash_strategy=hash_strategy)
             if progress and task_id is not None:
                 progress.advance(task_id)
             return info
         except Exception:
-            # Log and skip corrupt/unreadable files
             return None
 
-    # Parallel extraction — network-latency on CIFS hides thread overhead
+    # Parallel extraction -- network-latency on CIFS hides thread overhead
     with ThreadPoolExecutor(max_workers=min(workers, 16)) as pool:
         for info in pool.map(process, files_to_scan):
             if info is not None:
@@ -84,6 +84,3 @@ def scan_directory(
 
     if progress and task_id is not None:
         progress.remove_task(task_id)
-
-
-from datetime import datetime

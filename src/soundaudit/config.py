@@ -9,12 +9,22 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from soundaudit.models import HashStrategy
+
 
 class ScanConfig(BaseModel):
     paths: list[str] = Field(default_factory=lambda: ["/mnt/nas2/Music"])
     extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a"])
     workers: int = Field(default=4, ge=1, le=32)
     follow_symlinks: bool = False
+    hash_strategy: HashStrategy = Field(default=HashStrategy.HEAD_ONLY)
+
+    @field_validator("hash_strategy", mode="before")
+    @classmethod
+    def coerce_hash_strategy(cls, v):
+        if isinstance(v, str):
+            return HashStrategy(v)
+        return v
 
     @field_validator("paths")
     @classmethod

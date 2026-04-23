@@ -18,6 +18,13 @@ class AudioFormat(Enum):
     UNKNOWN = "unknown"
 
 
+class HashStrategy(str, Enum):
+    HEAD_ONLY = "head-only"      # first 1MB, default
+    HEAD_TAIL = "head-tail"      # first 1MB + last 1MB
+    FULL = "full"                # entire file
+    NONE = "none"                # skip hashing
+
+
 class TagQuality(Enum):
     COMPLETE = auto()
     MISSING_OPTIONAL = auto()
@@ -29,7 +36,8 @@ class TagQuality(Enum):
 class AudioSignature:
     """Immutable audio fingerprinting data."""
 
-    md5_content: str
+    content_hash: str
+    hash_algo: str = "xxhash3_64"
     acoustid_fingerprint: Optional[str] = None
     acoustid_duration_ms: Optional[int] = None
     chromaprint: Optional[str] = None

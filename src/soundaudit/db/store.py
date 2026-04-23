@@ -69,7 +69,8 @@ class DBFile(Base):  # type: ignore[valid-type,misc]
     cover_size = Column(Integer)
 
     # Signatures
-    md5_content = Column(String, index=True)
+    content_hash = Column(String, index=True)
+    hash_algo = Column(String, default="xxhash3_64")
     acoustid_fingerprint = Column(Text)
     acoustid_duration_ms = Column(Integer)
 
@@ -184,7 +185,8 @@ class Database:
         db_file.cover_size = tags.cover_size_bytes
 
         if info.signature:
-            db_file.md5_content = info.signature.md5_content
+            db_file.content_hash = info.signature.content_hash
+            db_file.hash_algo = info.signature.hash_algo
             db_file.acoustid_fingerprint = info.signature.acoustid_fingerprint
             db_file.acoustid_duration_ms = info.signature.acoustid_duration_ms
 
