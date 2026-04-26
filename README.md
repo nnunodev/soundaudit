@@ -28,6 +28,10 @@ See [DEV_PLAN.md](DEV_PLAN.md) for the phased development plan.
 # Install
 pip install -e ".[dev]"
 
+# Launch the interactive TUI
+soundaudit tui
+
+# Or use the CLI directly
 # Scan your library (head-only hash = fastest for large/network libraries)
 soundaudit scan ~/Music --db ~/.local/share/soundaudit/scan.db --workers 4
 
@@ -103,6 +107,7 @@ Mounts your Music folder and persists the database locally.
 | `resolver` | MusicBrainz API lookups |
 | `reporter` | Console tables and HTML reports |
 | `actuator` | Apply fixes (tags, rename, dedupe) |
+| `tui` | Interactive terminal UI with live scan progress |
 
 ## Performance Notes
 

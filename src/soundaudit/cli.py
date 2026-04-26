@@ -15,6 +15,7 @@ from soundaudit.config import AppConfig
 from soundaudit.db.store import Database
 from soundaudit.models import HashStrategy
 from soundaudit.scanner.walker import scan_directory
+from soundaudit.tui import SoundAuditApp
 
 app = typer.Typer(
     name="soundaudit",
@@ -201,6 +202,18 @@ def _report_corrupt(database: Database) -> None:
 
     console.print(table)
     console.print(f"\nTotal: {len(files)} corrupt files")
+
+
+@app.command("tui")
+def tui_cmd(
+    config: Path | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
+    db: Path | None = typer.Option(None, "--db", help="SQLite database path"),
+) -> None:
+    """Launch the interactive TUI."""
+    SoundAuditApp(
+        db_path=str(db) if db else None,
+        config_path=config,
+    ).run()
 
 
 @app.command("version")

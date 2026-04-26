@@ -1,6 +1,7 @@
 scan:
   paths:
     - /mnt/nas2/Music
+    - /mnt/nas2/to_move
   extensions:
     - .flac
     - .mp3
