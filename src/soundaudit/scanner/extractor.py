@@ -17,9 +17,36 @@ from mutagen.wave import WAVE
 from soundaudit.models import AudioFormat, AudioSignature, FileInfo, HashStrategy, TrackTags
 
 
+try:
+    import xxhash
+
+    _XXHASH_AVAILABLE = True
+except ImportError:
+    _XXHASH_AVAILABLE = False
+
+
 def extract_file_info(path: Path, *, hash_strategy: HashStrategy = HashStrategy.HEAD_ONLY) -> FileInfo:
-    """Read all metadata from a single audio file."""
-    stat = path.stat()
+    """Read all metadata from a single audio file.
+
+    Every discovered file must end up in the database, even if unreadable.
+    All I/O exceptions are caught and returned as a corrupt FileInfo.
+    """
+    # Try to stat first — if we can't even do that, save minimal info
+    try:
+        stat = path.stat()
+        size_bytes = stat.st_size
+        mtime_ns = stat.st_mtime_ns
+    except OSError as exc:
+        return FileInfo(
+            path=path,
+            size_bytes=0,
+            mtime_ns=0,
+            format=AudioFormat.UNKNOWN,
+            tags=TrackTags(),
+            is_corrupt=True,
+            corruption_reason=f"Cannot stat file: {exc}",
+        )
+
     suffix = path.suffix.lower()
 
     # Map extension to mutagen class and our enum
@@ -27,35 +54,36 @@ def extract_file_info(path: Path, *, hash_strategy: HashStrategy = HashStrategy.
     if class_and_format is None:
         return FileInfo(
             path=path,
-            size_bytes=stat.st_size,
-            mtime_ns=stat.st_mtime_ns,
+            size_bytes=size_bytes,
+            mtime_ns=mtime_ns,
             format=AudioFormat.UNKNOWN,
             tags=TrackTags(),
+            is_corrupt=True,
+            corruption_reason=f"Unknown extension: {suffix}",
         )
 
     mutagen_cls, fmt, lossless = class_and_format
 
     try:
         audio = mutagen_cls(str(path))
-    except MutagenError:
-        # Corrupt or unsupported — return minimal info
+    except MutagenError as exc:
         return FileInfo(
             path=path,
-            size_bytes=stat.st_size,
-            mtime_ns=stat.st_mtime_ns,
+            size_bytes=size_bytes,
+            mtime_ns=mtime_ns,
             format=fmt,
             lossless=lossless,
             tags=TrackTags(),
             is_corrupt=True,
-            corruption_reason="MutagenError: unable to read file",
+            corruption_reason=f"MutagenError: {exc}",
         )
 
     # Stream info
     info = audio.info
     file_info = FileInfo(
         path=path,
-        size_bytes=stat.st_size,
-        mtime_ns=stat.st_mtime_ns,
+        size_bytes=size_bytes,
+        mtime_ns=mtime_ns,
         format=fmt,
         sample_rate_hz=getattr(info, "sample_rate", None),
         bit_depth=getattr(info, "bits_per_sample", None),
@@ -75,8 +103,17 @@ def extract_file_info(path: Path, *, hash_strategy: HashStrategy = HashStrategy.
             file_info.tags.cover_size_bytes = len(pic.data)
 
     # Compute content hash according to strategy
-    if hash_strategy != HashStrategy.NONE:
-        file_info.signature = _compute_signature(path, hash_strategy)
+    if hash_strategy != HashStrategy.NONE and _XXHASH_AVAILABLE:
+        try:
+            file_info.signature = _compute_signature(path, hash_strategy)
+        except Exception as exc:
+            file_info.corruption_reason = (
+                f"{file_info.corruption_reason}\n" if file_info.corruption_reason else ""
+            ) + f"Hash error ({type(exc).__name__}): {exc}"
+    elif hash_strategy != HashStrategy.NONE and not _XXHASH_AVAILABLE:
+        file_info.corruption_reason = (
+            f"{file_info.corruption_reason}\n" if file_info.corruption_reason else ""
+        ) + "xxhash not installed (pip install xxhash)"
 
     return file_info
 
@@ -137,8 +174,6 @@ _MUTAGEN_MAP: dict[str, tuple] = {
 
 
 def _compute_signature(path: Path, strategy: HashStrategy) -> AudioSignature:
-    import xxhash
-
     h = xxhash.xxh3_64()
     with open(path, "rb") as f:
         if strategy == HashStrategy.HEAD_ONLY:

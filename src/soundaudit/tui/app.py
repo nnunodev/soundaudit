@@ -143,8 +143,7 @@ class SoundAuditApp(App[None]):
     #scan-log {
         height: 1fr;
         min-height: 3;
-        max-height: 8;
-        border: solid $surface-lighten-1;
+        max-height: 12;
         padding: 0 1;
     }
 

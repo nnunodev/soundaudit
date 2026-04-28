@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
 
@@ -58,6 +57,9 @@ class DashboardScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        self._refresh_stats()
+
+    def on_screen_resume(self) -> None:
         self._refresh_stats()
 
     def _refresh_stats(self) -> None:
@@ -199,6 +201,9 @@ class ScanScreen(Screen[None]):
                     "Start Scan", id="btn-start", variant="primary", disabled=False
                 )
                 yield Button(
+                    "Stop Scan", id="btn-stop", variant="error", disabled=True
+                )
+                yield Button(
                     "Back", id="btn-back", variant="default", disabled=False
                 )
         yield Footer()
@@ -236,6 +241,11 @@ class ScanScreen(Screen[None]):
             f"[bold]Scanning:[/bold] {value}" if value else ""
         )
 
+    def watch_is_scanning(self, scanning: bool) -> None:
+        self.query_one("#btn-start", Button).disabled = scanning
+        self.query_one("#btn-stop", Button).disabled = not scanning
+        self.query_one("#btn-back", Button).disabled = scanning
+
     def _update_progress_totals(self) -> None:
         scan_bar = self.query_one("#scan-bar", ProgressBar)
         scan_bar.total = max(self.files_found, 1)
@@ -243,6 +253,8 @@ class ScanScreen(Screen[None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-start":
             self._start_scan()
+        elif event.button.id == "btn-stop":
+            self.action_cancel()
         elif event.button.id == "btn-back":
             self.app.pop_screen()
 
@@ -268,7 +280,6 @@ class ScanScreen(Screen[None]):
             )
             return
         self._selected_paths = selected
-        self.query_one("#btn-start", Button).disabled = True
         self.files_found = 0
         self.files_scanned = 0
         self.files_skipped = 0
@@ -338,20 +349,42 @@ class ScanScreen(Screen[None]):
             total=max(len(all_files), 1),
             progress=max(len(all_files), 1),
         )
+        app.call_from_thread(
+            log.write_line,
+            f"Discovered {len(all_files):,} file(s) total.",
+        )
 
-        # Filter unchanged files
+        # Clean up stale DB entries (files removed/moved since last scan)
+        discovered_paths = {str(p) for p in all_files}
+        stale_paths = set(existing.keys()) - discovered_paths
+        if stale_paths:
+            removed = database.delete_by_paths(stale_paths)
+            app.call_from_thread(
+                log.write_line,
+                f"Removed {removed:,} stale database entr{'ies' if removed != 1 else 'y'} (no longer on disk).",
+            )
+
+        # Filter unchanged files – compare mtime with 1-second tolerance
         files_to_scan: list[Path] = []
         for p in all_files:
-            mtime = os.path.getmtime(p)
-            mtime_str = datetime.fromtimestamp(mtime).isoformat()
-            if str(p) in existing and existing[str(p)] == mtime_str:
-                skipped += 1
-                continue
-            files_to_scan.append(p)
+            try:
+                file_mtime = os.path.getmtime(p)
+                if str(p) in existing:
+                    if abs(file_mtime - existing[str(p)]) <= 1.0:
+                        skipped += 1
+                        continue
+                files_to_scan.append(p)
+            except OSError as exc:
+                app.call_from_thread(
+                    log.write_line,
+                    f"[WARN] Could not stat {p}: {exc}"
+                )
 
         app.call_from_thread(setattr, self, "files_skipped", skipped)
-        if skipped:
-            app.call_from_thread(log.write_line, f"Skipped {skipped:,} unchanged files.")
+        app.call_from_thread(
+            log.write_line,
+            f"Skipped {skipped:,} unchanged file{'' if skipped == 1 else 's'}.",
+        )
 
         total_to_scan = len(files_to_scan)
         if total_to_scan == 0:
@@ -360,17 +393,15 @@ class ScanScreen(Screen[None]):
             app.call_from_thread(self.post_message, self.ScanComplete(saved=0))
             return
 
-        app.call_from_thread(log.write_line, f"Scanning {total_to_scan:,} files...")
+        app.call_from_thread(log.write_line, f"Scanning {total_to_scan:,} file(s)...")
         app.call_from_thread(scan_bar.update, total=max(total_to_scan, 1))
 
         saved = 0
+        corrupt_count = 0
 
-        def process(p: Path) -> FileInfo | None:
+        def process(p: Path) -> FileInfo:
             from soundaudit.scanner.extractor import extract_file_info
-            try:
-                return extract_file_info(p)
-            except Exception:
-                return None
+            return extract_file_info(p)
 
         with ThreadPoolExecutor(max_workers=min(workers, 16)) as pool:
             log_batch: list[str] = []
@@ -381,31 +412,38 @@ class ScanScreen(Screen[None]):
                         log_batch.clear()
                     app.call_from_thread(log.write_line, "Cancelled.")
                     break
-                if info is not None:
-                    database.upsert_file(info)
-                    saved += 1
-                    app.call_from_thread(setattr, self, "files_saved", saved)
-                    if info.is_corrupt:
+                database.upsert_file(info)
+                saved += 1
+                app.call_from_thread(setattr, self, "files_saved", saved)
+                if info.is_corrupt:
+                    corrupt_count += 1
+                    app.call_from_thread(
+                        log.write_line,
+                        f"[CORRUPT] {info.path}",
+                    )
+                    if info.corruption_reason:
                         app.call_from_thread(
                             log.write_line,
-                            f"[yellow]Corrupt:[/yellow] {info.path}",
+                            f"  reason: {info.corruption_reason}",
                         )
-                    else:
-                        log_batch.append(str(info.path))
-                        if len(log_batch) >= 20:
-                            app.call_from_thread(self._write_log_lines, log_batch[:])
-                            log_batch.clear()
+                else:
+                    log_batch.append(str(info.path))
+                    if len(log_batch) >= 20:
+                        app.call_from_thread(self._write_log_lines, log_batch[:])
+                        log_batch.clear()
                 app.call_from_thread(setattr, self, "files_scanned", i + 1)
                 app.call_from_thread(scan_bar.advance, 1)
-                if info:
-                    app.call_from_thread(setattr, self, "current_file", str(info.path))
+                app.call_from_thread(setattr, self, "current_file", str(info.path))
 
             if log_batch:
                 app.call_from_thread(self._write_log_lines, log_batch[:])
                 log_batch.clear()
 
         app.call_from_thread(setattr, self, "is_scanning", False)
-        app.call_from_thread(log.write_line, f"Done. Saved {saved:,} files.")
+        app.call_from_thread(
+            log.write_line,
+            f"Done. Saved {saved:,} file(s) — {saved - corrupt_count:,} valid, {corrupt_count:,} corrupt.",
+        )
         app.call_from_thread(self.post_message, self.ScanComplete(saved=saved))
 
     def _write_log_lines(self, lines: list[str]) -> None:
@@ -414,7 +452,6 @@ class ScanScreen(Screen[None]):
             log.write_line(line)
 
     def on_scan_screen_scan_complete(self, event: ScanComplete) -> None:
-        self.query_one("#btn-start", Button).disabled = False
         self.query_one("#scan-log", Log).write_line(
             f"[green]Scan complete. {event.saved:,} file(s) saved.[/green]"
         )
