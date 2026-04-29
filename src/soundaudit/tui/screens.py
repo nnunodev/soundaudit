@@ -55,11 +55,12 @@ class DashboardScreen(Screen[None]):
         ("q", "quit", "Quit"),
         ("s", "scan", "Scan"),
         ("r", "report", "Report"),
+        ("a", "analyze", "Analyze"),
         ("R", "reset", "Reset DB"),
     ]
 
     NAV_IDS: ClassVar[list[str]] = [
-        "btn-scan", "btn-report", "btn-reset", "btn-quit"
+        "btn-scan", "btn-report", "btn-analyze", "btn-reset", "btn-quit"
     ]
     _nav_index: reactive[int] = reactive(0)
 
@@ -75,6 +76,7 @@ class DashboardScreen(Screen[None]):
             with Horizontal(id="actions-row"):
                 yield Static("▸ Scan       [dim]s[/dim]", id="btn-scan", classes="nav-item")
                 yield Static("▸ Reports    [dim]r[/dim]", id="btn-report", classes="nav-item")
+                yield Static("▸ Analyze    [dim]a[/dim]", id="btn-analyze", classes="nav-item")
                 yield Static("▸ Reset DB   [dim]R[/dim]", id="btn-reset", classes="nav-item")
                 yield Static("▸ Quit       [dim]q[/dim]", id="btn-quit", classes="nav-item")
         yield Footer()
@@ -120,6 +122,8 @@ class DashboardScreen(Screen[None]):
             self.action_scan()
         elif wid == "btn-report":
             self.action_report()
+        elif wid == "btn-analyze":
+            self.action_analyze()
         elif wid == "btn-reset":
             self._confirm_reset()
         elif wid == "btn-quit":
@@ -230,6 +234,8 @@ class DashboardScreen(Screen[None]):
             self.action_scan()
         elif widget_id == "btn-report":
             self.action_report()
+        elif widget_id == "btn-analyze":
+            self.action_analyze()
         elif widget_id == "btn-reset":
             self._confirm_reset()
         elif widget_id == "btn-quit":
@@ -258,6 +264,9 @@ class DashboardScreen(Screen[None]):
 
     def action_report(self) -> None:
         self.app.push_screen("report")
+
+    def action_analyze(self) -> None:
+        self.app.push_screen("analyze")
 
     def action_reset(self) -> None:
         self._confirm_reset()
@@ -1633,3 +1642,251 @@ class ExportDialog(ModalScreen[Path | None]):
             self._shortcut_idx = self._shortcut_ids().index(widget_id)
             self._apply_shortcut()
             event.stop()
+
+
+class AnalyzerChooseScreen(Screen[dict[str, bool] | None]):
+    """Choose which analysis passes to run."""
+
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+        ("q", "quit", "Quit"),
+        ("escape", "cancel", "Back"),
+    ]
+
+    OPTION_IDS: ClassVar[list[str]] = ["opt-duplicates", "opt-acoustid", "opt-transcodes"]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="scan-screen"):
+            yield Static("[b]Analyze[/b]  [dim]esc = back[/dim]", id="scan-title")
+            yield Static("[dim]Toggle which analyses to run[/dim]", id="path-label")
+            with Vertical(id="path-list"):
+                yield Static(
+                    "[green]✓[/green] Dup Groups     [dim]content-hash duplicates[/dim]",
+                    id="opt-duplicates",
+                    classes="path-item checked nav-item",
+                )
+                yield Static(
+                    "[red]✗[/red] AcoustID Dups  [dim]fingerprint duplicates[/dim]",
+                    id="opt-acoustid",
+                    classes="path-item unchecked nav-item",
+                )
+                yield Static(
+                    "[red]✗[/red] Transcodes     [dim]spectral fake-FLAC detection (slow)[/dim]",
+                    id="opt-transcodes",
+                    classes="path-item unchecked nav-item",
+                )
+            with Horizontal(id="scan-actions"):
+                yield Static("Run", id="btn-run", classes="scan-link")
+                yield Static("Back", id="btn-back", classes="scan-link")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._opt_selected: dict[str, bool] = {
+            "opt-duplicates": True,
+            "opt-acoustid": False,
+            "opt-transcodes": False,
+        }
+        self._opt_focus_idx: int = 0
+        self._action_focus_idx: int = 0
+        self._focus_group: str = "options"
+        self._draw_focus()
+
+    def _draw_focus(self) -> None:
+        for oid in self.OPTION_IDS:
+            self.query_one(f"#{oid}", Static).remove_class("focused-nav")
+        for bid in ("btn-run", "btn-back"):
+            self.query_one(f"#{bid}", Static).remove_class("focused-nav")
+        if self._focus_group == "options":
+            oid = self.OPTION_IDS[self._opt_focus_idx]
+            self.query_one(f"#{oid}", Static).add_class("focused-nav")
+        else:
+            bids = ["btn-run", "btn-back"]
+            bid = bids[self._action_focus_idx]
+            self.query_one(f"#{bid}", Static).add_class("focused-nav")
+
+    def _toggle_option(self, oid: str) -> None:
+        was = self._opt_selected[oid]
+        self._opt_selected[oid] = not was
+        node = self.query_one(f"#{oid}", Static)
+        checked = self._opt_selected[oid]
+        # Refresh text
+        base = {
+            "opt-duplicates": "Dup Groups     [dim]content-hash duplicates[/dim]",
+            "opt-acoustid": "AcoustID Dups  [dim]fingerprint duplicates[/dim]",
+            "opt-transcodes": "Transcodes     [dim]spectral fake-FLAC detection (slow)[/dim]",
+        }[oid]
+        if checked:
+            node.update(f"[green]✓[/green] {base}")
+            node.add_class("checked")
+            node.remove_class("unchecked")
+        else:
+            node.update(f"[red]✗[/red] {base}")
+            node.remove_class("checked")
+            node.add_class("unchecked")
+
+    def on_key(self, event) -> None:
+        key = event.key
+        if key in ("up", "k"):
+            if self._focus_group == "options":
+                self._opt_focus_idx = max(0, self._opt_focus_idx - 1)
+            self._focus_group = "options"
+            self._draw_focus()
+            event.stop()
+        elif key in ("down", "j"):
+            if self._focus_group == "options":
+                self._opt_focus_idx = min(len(self.OPTION_IDS) - 1, self._opt_focus_idx + 1)
+            self._focus_group = "options"
+            self._draw_focus()
+            event.stop()
+        elif key in ("tab",):
+            self._focus_group = "actions" if self._focus_group == "options" else "options"
+            self._draw_focus()
+            event.stop()
+        elif key in ("enter", "space"):
+            if self._focus_group == "options":
+                self._toggle_option(self.OPTION_IDS[self._opt_focus_idx])
+            else:
+                bids = ["btn-run", "btn-back"]
+                self._activate_action(bids[self._action_focus_idx])
+            event.stop()
+        elif key in ("escape", "q"):
+            self.app.pop_screen()
+            event.stop()
+
+    def _activate_action(self, bid: str) -> None:
+        if bid == "btn-run":
+            mapping = {
+                "opt-duplicates": "duplicates",
+                "opt-acoustid": "acoustid",
+                "opt-transcodes": "transcodes",
+            }
+            result = {mapping[k]: v for k, v in self._opt_selected.items()}
+            self.app.pop_screen()
+            self.app.push_screen(AnalyzerRunScreen(result))
+        elif bid == "btn-back":
+            self.app.pop_screen()
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id in self.OPTION_IDS:
+            self._toggle_option(widget_id)
+        elif widget_id == "btn-run":
+            self._activate_action("btn-run")
+        elif widget_id == "btn-back":
+            self._activate_action("btn-back")
+
+
+class AnalyzerRunScreen(Screen[None]):
+    """Show progress while running selected analysis passes."""
+
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+        ("q", "quit", "Quit"),
+        ("escape", "cancel", "Back"),
+    ]
+
+    class RunDone(Message):
+        """Emitted when all passes complete."""
+
+        def __init__(self) -> None:
+            super().__init__()
+
+    def __init__(self, choices: dict[str, bool]) -> None:
+        self._choices = choices
+        self._running: bool = False
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="scan-screen"):
+            yield Static("[b]Running Analyses[/b]", id="scan-title")
+            yield Log(id="scan-log")
+            with Horizontal(id="scan-actions"):
+                yield Static("Back", id="btn-back", classes="scan-link")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#scan-log", Log).can_focus = False
+        self.query_one("#btn-back", Static).can_focus = False
+        self.query_one("#btn-back", Static).add_class("dimmed")
+        self._running = True
+        self.run_worker(self._worker, exclusive=True, thread=True)
+
+    def _log(self, msg: str) -> None:
+        app = self.app  # type: ignore[attr-defined]
+        app.call_from_thread(
+            self.query_one("#scan-log", Log).write_line,
+            msg,
+        )
+
+    def _worker(self) -> None:
+        app = self.app  # type: ignore[attr-defined]
+        db_path = app.get_db_path()
+        database = Database(db_path)
+
+        if self._choices.get("duplicates"):
+            self._log("")
+            self._log("[cyan]━ Content-Hash Duplicates ━[/cyan]")
+            try:
+                analyzer = DuplicateAnalyzer(database)
+                groups = find_duplicate_groups(database)
+                if groups:
+                    write_duplicate_groups(database, groups)
+                    total_wasted = sum(r.wasted_bytes for r in groups)
+                    self._log(
+                        f"Found {len(groups)} groups, "
+                        f"{sum(r.file_count for r in groups)} files total. "
+                        f"Wasted: {_human_size(total_wasted)}"
+                    )
+                else:
+                    self._log("No duplicates found.")
+            except Exception as exc:
+                self._log(f"[red]Duplicate analysis failed: {exc}[/red]")
+
+        if self._choices.get("acoustid"):
+            self._log("")
+            self._log("[cyan]━ AcoustID Duplicates ━[/cyan]")
+            try:
+                analyzer = AcoustidDuplicateAnalyzer(database)
+                groups = analyzer.run()
+                if groups:
+                    total_wasted = sum(r.wasted_bytes for r in groups)
+                    self._log(
+                        f"Found {len(groups)} groups, "
+                        f"{sum(r.file_count for r in groups)} files total. "
+                        f"Wasted: {_human_size(total_wasted)}"
+                    )
+                else:
+                    self._log("No AcoustID duplicates found.")
+            except Exception as exc:
+                self._log(f"[red]AcoustID analysis failed: {exc}[/red]")
+
+        if self._choices.get("transcodes"):
+            self._log("")
+            self._log("[cyan]━ Transcode Detection ━[/cyan]")
+            self._log("[yellow]This may take several minutes for large libraries...[/yellow]")
+            try:
+                results = analyze_library_transcodes(
+                    database,
+                    workers=4,
+                    log_callback=self._log,
+                )
+            except Exception as exc:
+                self._log(f"[red]Transcode analysis failed: {exc}[/red]")
+
+        self._log("")
+        self._log("[green]All selected analyses complete.[/green]")
+        self._running = False
+        app.call_from_thread(
+            self.query_one("#btn-back", Static).remove_class, "dimmed"
+        )
+
+    def on_click(self, event) -> None:
+        if not self._running:
+            self.app.pop_screen()
+
+    def action_cancel(self) -> None:
+        if not self._running:
+            self.app.pop_screen()
+
+    def action_quit(self) -> None:
+        self.app.exit()

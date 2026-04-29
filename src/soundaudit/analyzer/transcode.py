@@ -299,6 +299,7 @@ def analyze_library_transcodes(
     lossless_only: bool = True,
     workers: int = 4,
     console: Console | None = None,
+    log_callback: object | None = None,
 ) -> list[SpectralResult]:
     """Batch spectral analysis over every file in the database.
 
@@ -312,15 +313,21 @@ def analyze_library_transcodes(
         q = s.query(DBFile)
         if lossless_only:
             q = q.filter(DBFile.lossless == 1)
-        # Only analyze files we haven't checked yet, plus those whose
-        # content changed (signature updated). In practice we just do all.
         rows = q.all()
 
     if not rows:
-        c.print("[green]No lossless files to analyze.[/green]")
+        msg = "[green]No lossless files to analyze.[/green]"
+        if log_callback:
+            log_callback(msg)
+        else:
+            c.print(msg)
         return []
 
-    c.print(f"[cyan]Analysing {len(rows)} lossless file(s) for spectral transcodes...[/cyan]")
+    msg = f"[cyan]Analysing {len(rows)} lossless file(s) for spectral transcodes...[/cyan]"
+    if log_callback:
+        log_callback(msg)
+    else:
+        c.print(msg)
 
     results: list[SpectralResult] = []
 
@@ -348,15 +355,22 @@ def analyze_library_transcodes(
             processed += 1
             results.append(res)
             if processed % 50 == 0 or processed == total:
-                c.print(
+                line = (
                     f"  [dim]{processed}/{total}  "
                     f"transcodes={sum(1 for r in results if r.is_transcode)}"
-                    f"[/dim]",
-                    end="\r",
+                    f"[/dim]"
                 )
+                if log_callback:
+                    log_callback(line)
+                else:
+                    c.print(line, end="\r")
 
     transcode_count = sum(1 for r in results if r.is_transcode)
-    c.print(
-        f"\n[green]Done. {transcode_count}/{len(results)} flagged as possible transcodes.[/green]"
+    msg = (
+        f"[green]Done. {transcode_count}/{len(results)} flagged as possible transcodes.[/green]"
     )
+    if log_callback:
+        log_callback(msg)
+    else:
+        c.print(msg)
     return results
