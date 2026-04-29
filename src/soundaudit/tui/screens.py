@@ -55,12 +55,11 @@ class DashboardScreen(Screen[None]):
         ("q", "quit", "Quit"),
         ("s", "scan", "Scan"),
         ("r", "report", "Report"),
-        ("a", "analyze", "Analyze"),
         ("R", "reset", "Reset DB"),
     ]
 
     NAV_IDS: ClassVar[list[str]] = [
-        "btn-scan", "btn-report", "btn-analyze", "btn-reset", "btn-quit"
+        "btn-scan", "btn-report", "btn-reset", "btn-quit"
     ]
     _nav_index: reactive[int] = reactive(0)
 
@@ -76,7 +75,6 @@ class DashboardScreen(Screen[None]):
             with Horizontal(id="actions-row"):
                 yield Static("▸ Scan       [dim]s[/dim]", id="btn-scan", classes="nav-item")
                 yield Static("▸ Reports    [dim]r[/dim]", id="btn-report", classes="nav-item")
-                yield Static("▸ Analyze    [dim]a[/dim]", id="btn-analyze", classes="nav-item")
                 yield Static("▸ Reset DB   [dim]R[/dim]", id="btn-reset", classes="nav-item")
                 yield Static("▸ Quit       [dim]q[/dim]", id="btn-quit", classes="nav-item")
         yield Footer()
@@ -122,8 +120,6 @@ class DashboardScreen(Screen[None]):
             self.action_scan()
         elif wid == "btn-report":
             self.action_report()
-        elif wid == "btn-analyze":
-            self.action_analyze()
         elif wid == "btn-reset":
             self._confirm_reset()
         elif wid == "btn-quit":
@@ -234,8 +230,6 @@ class DashboardScreen(Screen[None]):
             self.action_scan()
         elif widget_id == "btn-report":
             self.action_report()
-        elif widget_id == "btn-analyze":
-            self.action_analyze()
         elif widget_id == "btn-reset":
             self._confirm_reset()
         elif widget_id == "btn-quit":
@@ -264,9 +258,6 @@ class DashboardScreen(Screen[None]):
 
     def action_report(self) -> None:
         self.app.push_screen("report")
-
-    def action_analyze(self) -> None:
-        self.app.push_screen("analyze")
 
     def action_reset(self) -> None:
         self._confirm_reset()
@@ -350,11 +341,34 @@ class ScanScreen(Screen[None]):
                     classes="path-item checked",
                 )
             )
+        # ── Analysis options ──
+        path_list.mount(Static("", id="sep-analyze"))
+        path_list.mount(
+            Static(
+                "[green]✓[/green] Dup Groups     [dim]content-hash duplicates (auto)[/dim]",
+                id="opt-duplicates",
+                classes="path-item checked",
+            )
+        )
+        path_list.mount(
+            Static(
+                "[red]✗[/red] AcoustID Dups  [dim]fingerprint duplicates[/dim]",
+                id="opt-acoustid",
+                classes="path-item unchecked",
+            )
+        )
+        path_list.mount(
+            Static(
+                "[red]✗[/red] Transcodes     [dim]fake-FLAC detection (slow)[/dim]",
+                id="opt-transcodes",
+                classes="path-item unchecked",
+            )
+        )
         # strip focus from everything non-interactive
         self.query_one("#scan-log", Log).can_focus = False
         self.query_one("#scan-title", Static).can_focus = False
         for sid in ("stat-found", "stat-scanned", "stat-skipped", "stat-saved",
-                    "discovery-label", "scanning-label", "current-file", "path-label"):
+                    "discovery-label", "scanning-label", "current-file", "path-label", "sep-analyze"):
             node = self.query_one(f"#{sid}", Static)
             if node:
                 node.can_focus = False
@@ -389,6 +403,9 @@ class ScanScreen(Screen[None]):
         self._draw_focus()
 
     def _toggle_path(self, pid: str) -> None:
+        if pid.startswith("opt-"):
+            self._toggle_option_in_scan(pid)
+            return
         full, short = self._path_map[pid]
         was = self._path_selected[pid]
         self._path_selected[pid] = not was
@@ -402,6 +419,23 @@ class ScanScreen(Screen[None]):
             node.update(f"[red]✗[/red] {short}")
             node.add_class("unchecked")
             node.remove_class("checked")
+
+    def _toggle_option_in_scan(self, oid: str) -> None:
+        node = self.query_one(f"#{oid}", Static)
+        currently_checked = "checked" in node.classes
+        base = {
+            "opt-duplicates": "Dup Groups     [dim]content-hash duplicates (auto)[/dim]",
+            "opt-acoustid": "AcoustID Dups  [dim]fingerprint duplicates[/dim]",
+            "opt-transcodes": "Transcodes     [dim]fake-FLAC detection (slow)[/dim]",
+        }[oid]
+        if currently_checked:
+            node.update(f"[red]✗[/red] {base}")
+            node.remove_class("checked")
+            node.add_class("unchecked")
+        else:
+            node.update(f"[green]✓[/green] {base}")
+            node.add_class("checked")
+            node.remove_class("unchecked")
 
     def on_key(self, event) -> None:
         key = event.key
@@ -551,6 +585,12 @@ class ScanScreen(Screen[None]):
                 "No paths selected. Toggle at least one."
             )
             return
+        # Capture analysis choices from UI before worker starts
+        self._analysis_choices: dict[str, bool] = {
+            "duplicates": "checked" in self.query_one("#opt-duplicates", Static).classes,
+            "acoustid": "checked" in self.query_one("#opt-acoustid", Static).classes,
+            "transcodes": "checked" in self.query_one("#opt-transcodes", Static).classes,
+        }
         self._selected_paths = selected
         self.files_found = 0
         self.files_scanned = 0
@@ -561,6 +601,9 @@ class ScanScreen(Screen[None]):
         log = self.query_one("#scan-log", Log)
         log.clear()
         log.write_line(f"Starting scan of {len(selected)} path(s)...")
+        enabled = [k for k, v in self._analysis_choices.items() if v]
+        if enabled:
+            log.write_line(f"After-scan analyses: {', '.join(enabled)}")
         self.run_worker(
             self._scan_worker, exclusive=True, thread=True
         )
@@ -722,38 +765,53 @@ class ScanScreen(Screen[None]):
         )
 
         # Run duplicate analysis after scan
-        try:
-            app.call_from_thread(log.write_line, "Analyzing content-hash duplicates...")
-            groups = find_duplicate_groups(database)
-            if groups:
-                write_duplicate_groups(database, groups)
-                total_wasted = sum(r.wasted_bytes for r in groups)
-                app.call_from_thread(
-                    log.write_line,
-                    f"Found {len(groups)} duplicate groups ({sum(r.file_count for r in groups)} files). "
-                    f"Wasted: {_human_size(total_wasted)}.",
-                )
-            else:
-                app.call_from_thread(log.write_line, "No content-hash duplicates found.")
-        except Exception as exc:
-            app.call_from_thread(log.write_line, f"Duplicate analysis failed: {exc}")
+        choices: dict[str, bool] = getattr(self, "_analysis_choices", {"duplicates": True})
 
-        # Run AcoustID analysis after scan (if any fingerprints were collected)
-        try:
-            app.call_from_thread(log.write_line, "Analyzing AcoustID duplicates...")
-            ac_groups = find_acoustid_groups(database)
-            if ac_groups:
-                write_acoustid_groups(database, ac_groups)
-                total_wasted = sum(r.wasted_bytes for r in ac_groups)
-                app.call_from_thread(
-                    log.write_line,
-                    f"Found {len(ac_groups)} AcoustID groups ({sum(r.file_count for r in ac_groups)} files). "
-                    f"Wasted: {_human_size(total_wasted)}.",
+        if choices.get("duplicates", True):
+            try:
+                app.call_from_thread(log.write_line, "Analyzing content-hash duplicates...")
+                groups = find_duplicate_groups(database)
+                if groups:
+                    write_duplicate_groups(database, groups)
+                    total_wasted = sum(r.wasted_bytes for r in groups)
+                    app.call_from_thread(
+                        log.write_line,
+                        f"Found {len(groups)} duplicate groups ({sum(r.file_count for r in groups)} files). "
+                        f"Wasted: {_human_size(total_wasted)}.",
+                    )
+                else:
+                    app.call_from_thread(log.write_line, "No content-hash duplicates found.")
+            except Exception as exc:
+                app.call_from_thread(log.write_line, f"Duplicate analysis failed: {exc}")
+
+        if choices.get("acoustid"):
+            try:
+                app.call_from_thread(log.write_line, "Analyzing AcoustID duplicates...")
+                ac_groups = find_acoustid_groups(database)
+                if ac_groups:
+                    write_acoustid_groups(database, ac_groups)
+                    total_wasted = sum(r.wasted_bytes for r in ac_groups)
+                    app.call_from_thread(
+                        log.write_line,
+                        f"Found {len(ac_groups)} AcoustID groups ({sum(r.file_count for r in ac_groups)} files). "
+                        f"Wasted: {_human_size(total_wasted)}.",
+                    )
+                else:
+                    app.call_from_thread(log.write_line, "No AcoustID duplicates found.")
+            except Exception as exc:
+                app.call_from_thread(log.write_line, f"AcoustID analysis failed: {exc}")
+
+        if choices.get("transcodes"):
+            try:
+                app.call_from_thread(log.write_line, "Analyzing transcodes...")
+                from soundaudit.analyzer.transcode import analyze_library_transcodes
+                analyze_library_transcodes(
+                    database,
+                    workers=4,
+                    log_callback=lambda msg: app.call_from_thread(log.write_line, msg),
                 )
-            else:
-                app.call_from_thread(log.write_line, "No AcoustID duplicates found.")
-        except Exception as exc:
-            app.call_from_thread(log.write_line, f"AcoustID analysis failed: {exc}")
+            except Exception as exc:
+                app.call_from_thread(log.write_line, f"Transcode analysis failed: {exc}")
 
         app.call_from_thread(self.post_message, self.ScanComplete(saved=saved))
 
