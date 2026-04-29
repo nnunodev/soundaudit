@@ -237,8 +237,9 @@ class ScanScreen(Screen[None]):
         self.query_one("#stat-saved", Static).update(f"Saved: {value:,}")
 
     def watch_current_file(self, value: str) -> None:
+        display = Path(value).name if value else ""
         self.query_one("#current-file", Static).update(
-            f"[bold]Scanning:[/bold] {value}" if value else ""
+            f"[bold]Scanning:[/bold] {display}" if display else ""
         )
 
     def watch_is_scanning(self, scanning: bool) -> None:
@@ -276,7 +277,7 @@ class ScanScreen(Screen[None]):
                 selected.append(str(cb.label))
         if not selected:
             self.query_one("#scan-log", Log).write_line(
-                "[red]No paths selected. Check at least one.[/red]"
+                "No paths selected. Check at least one."
             )
             return
         self._selected_paths = selected
@@ -321,7 +322,7 @@ class ScanScreen(Screen[None]):
             root = Path(root_path).expanduser().resolve()
             if not root.exists():
                 app.call_from_thread(
-                    log.write_line, f"[red]Skipping missing path: {root}[/red]"
+                    log.write_line, f"Skipping missing path: {root}"
                 )
                 continue
             try:
@@ -341,7 +342,7 @@ class ScanScreen(Screen[None]):
                             progress=total_estimate,
                         )
             except Exception as exc:
-                app.call_from_thread(log.write_line, f"[red]Error in {root}: {exc}[/red]")
+                app.call_from_thread(log.write_line, f"Error in {root}: {exc}")
 
         app.call_from_thread(setattr, self, "files_found", len(all_files))
         app.call_from_thread(
@@ -427,7 +428,7 @@ class ScanScreen(Screen[None]):
                             f"  reason: {info.corruption_reason}",
                         )
                 else:
-                    log_batch.append(str(info.path))
+                    log_batch.append(Path(info.path).name)
                     if len(log_batch) >= 20:
                         app.call_from_thread(self._write_log_lines, log_batch[:])
                         log_batch.clear()
@@ -452,9 +453,14 @@ class ScanScreen(Screen[None]):
             log.write_line(line)
 
     def on_scan_screen_scan_complete(self, event: ScanComplete) -> None:
-        self.query_one("#scan-log", Log).write_line(
-            f"[green]Scan complete. {event.saved:,} file(s) saved.[/green]"
-        )
+        if event.saved > 0:
+            self.query_one("#scan-log", Log).write_line(
+                f"Scan complete. {event.saved:,} file(s) saved."
+            )
+        else:
+            self.query_one("#scan-log", Log).write_line(
+                "Scan complete — nothing new to save."
+            )
 
 
 class ReportScreen(Screen[None]):

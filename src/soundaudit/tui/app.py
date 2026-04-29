@@ -73,8 +73,8 @@ class SoundAuditApp(App[None]):
 
     /* Scan screen */
     #scan-screen {
-        width: 80;
-        height: 28;
+        width: 100;
+        height: 36;
         border: solid $primary;
         padding: 1 1;
         align: center top;
@@ -138,13 +138,14 @@ class SoundAuditApp(App[None]):
         height: auto;
         padding: 0 0;
         text-align: center;
+        color: $warning;
     }
 
     #scan-log {
         height: 1fr;
-        min-height: 3;
-        max-height: 12;
+        min-height: 6;
         padding: 0 1;
+        border: solid $surface-lighten-1;
     }
 
     #scan-actions {
