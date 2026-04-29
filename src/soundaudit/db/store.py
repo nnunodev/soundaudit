@@ -87,6 +87,7 @@ class DBFile(Base):  # type: ignore[valid-type,misc]
     transcode_confidence = Column(Float, default=0.0)
     corruption_reason = Column(Text)
     duplicate_group_id = Column(Integer)
+    acoustid_group_id = Column(Integer, index=True)
 
     def __repr__(self) -> str:
         return f"<DBFile {self.path}>"
@@ -97,6 +98,17 @@ class DuplicateGroup(Base):  # type: ignore[valid-type,misc]
 
     id = Column(Integer, primary_key=True)
     acoustid = Column(String, index=True)
+    group_type = Column(String, default="content_hash")
+    created = Column(DateTime, default=datetime.utcnow)
+
+
+class AcoustidGroup(Base):  # type: ignore[valid-type,misc]
+    """Fuzzy duplicate groups created from identical chromaprint fingerprints."""
+
+    __tablename__ = "acoustid_groups"
+
+    id = Column(Integer, primary_key=True)
+    fingerprint = Column(String, index=True, nullable=False)
     created = Column(DateTime, default=datetime.utcnow)
 
 

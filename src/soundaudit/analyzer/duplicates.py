@@ -141,7 +141,10 @@ def write_duplicate_groups(database, results: list[DuplicateGroupResult]) -> int
         s.query(DuplicateGroup).delete(synchronize_session=False)
 
         for result in results:
-            group = DuplicateGroup(acoustid=result.content_hash)
+            group = DuplicateGroup(
+                acoustid=result.content_hash,
+                group_type="content_hash",
+            )
             s.add(group)
             s.flush()  # get group.id
 

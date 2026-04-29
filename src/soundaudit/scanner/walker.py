@@ -39,6 +39,8 @@ def scan_directory(
     existing: dict[str, str] | None = None,
     progress: Progress | None = None,
     hash_strategy: HashStrategy = HashStrategy.HEAD_ONLY,
+    fingerprint: bool = False,
+    fpcalc_path: str = "/usr/bin/fpcalc",
 ) -> Iterator[FileInfo]:
     """Yield FileInfo for each discovered audio file, using parallel extraction."""
     extensions = extensions or DEFAULT_EXTENSIONS
@@ -69,7 +71,12 @@ def scan_directory(
 
     def process(p: Path) -> FileInfo | None:
         try:
-            info = extract_file_info(p, hash_strategy=hash_strategy)
+            info = extract_file_info(
+                p,
+                hash_strategy=hash_strategy,
+                fingerprint=fingerprint,
+                fpcalc_path=fpcalc_path,
+            )
             if progress and task_id is not None:
                 progress.advance(task_id)
             return info

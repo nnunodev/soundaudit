@@ -155,6 +155,13 @@ class SoundAuditApp(App[None]):
         text-align: center;
     }
 
+    #stat-fingerprint {
+        width: auto;
+        height: auto;
+        text-align: center;
+        color: $text-muted;
+    }
+
     #discovery-row, #scanning-row {
         height: auto;
     }

@@ -1,5 +1,14 @@
 """Audio analysis modules: duplicates, transcodes, quality."""
 
+from soundaudit.analyzer.acoustid import (
+    AcoustidDuplicateAnalyzer,
+    AcoustidFileVerdict,
+    AcoustidGroupVerdict,
+    DupType,
+    analyze_acoustid_keepers,
+    find_acoustid_groups,
+    write_acoustid_groups,
+)
 from soundaudit.analyzer.duplicates import (
     DuplicateAnalyzer,
     DuplicateGroupResult,
@@ -8,6 +17,13 @@ from soundaudit.analyzer.duplicates import (
 )
 
 __all__ = [
+    "AcoustidDuplicateAnalyzer",
+    "AcoustidFileVerdict",
+    "AcoustidGroupVerdict",
+    "DupType",
+    "analyze_acoustid_keepers",
+    "find_acoustid_groups",
+    "write_acoustid_groups",
     "DuplicateAnalyzer",
     "DuplicateGroupResult",
     "find_duplicate_groups",

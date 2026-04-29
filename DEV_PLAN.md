@@ -60,11 +60,14 @@ soundaudit report --corrupt
   - Generates `soundaudit_{tab}_{YYYYMMDD_HHMMSS}.{ext}` default name
   - Exports the currently active tab's data
 
-### Phase 1b — AcoustID Fingerprinting + Fuzzy Duplicates (Next)
-- [ ] AcoustID fingerprint via `fpcalc` / `chromaprint` FFI
-- [ ] Store `acoustid` in `AudioSignature` table
-- [ ] Duplicate analyzer: group by acoustid, flag bit-for-bit vs transcode dups
-- [ ] CLI: `soundaudit duplicates [--delete-prompt|--auto-select-best]`
+### Phase 1b — AcoustID Fingerprinting + Fuzzy Duplicates ✅ (Done)
+- [x] AcoustID fingerprint via `fpcalc` / `chromaprint` FFI (pyacoustid preferred, fpcalc binary fallback)
+- [x] Store `acoustid_fingerprint` in `AudioSignature` table
+- [x] `acoustid_groups` DB table + `files.acoustid_group_id`
+- [x] Duplicate analyzer: group by acoustid, flag bit-for-bit vs transcode dups
+- [x] CLI: `soundaudit duplicates [--delete-prompt|--auto-select-best]`
+- [x] CLI: `soundaudit analyze --acoustid`
+- [x] CLI: `soundaudit scan --fingerprint` (wired through to extractor)
 
 ### Phase 2 — Transcode Detection (High value, high effort)
 - [ ] `ffprobe` spectral frequency analysis (cutoff detection)

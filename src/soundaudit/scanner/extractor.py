@@ -25,7 +25,13 @@ except ImportError:
     _XXHASH_AVAILABLE = False
 
 
-def extract_file_info(path: Path, *, hash_strategy: HashStrategy = HashStrategy.HEAD_ONLY) -> FileInfo:
+def extract_file_info(
+    path: Path,
+    *,
+    hash_strategy: HashStrategy = HashStrategy.HEAD_ONLY,
+    fingerprint: bool = False,
+    fpcalc_path: str = "/usr/bin/fpcalc",
+) -> FileInfo:
     """Read all metadata from a single audio file.
 
     Every discovered file must end up in the database, even if unreadable.
@@ -114,6 +120,19 @@ def extract_file_info(path: Path, *, hash_strategy: HashStrategy = HashStrategy.
         file_info.corruption_reason = (
             f"{file_info.corruption_reason}\n" if file_info.corruption_reason else ""
         ) + "xxhash not installed (pip install xxhash)"
+
+    # Compute AcoustID / chromaprint fingerprint
+    if fingerprint and file_info.signature is not None and not file_info.is_corrupt:
+        from soundaudit.fingerprint import fingerprint_file
+
+        fp = fingerprint_file(path, fpcalc_path=fpcalc_path)
+        if fp:
+            file_info.signature = AudioSignature(
+                content_hash=file_info.signature.content_hash,
+                hash_algo=file_info.signature.hash_algo,
+                acoustid_fingerprint=fp.fingerprint,
+                acoustid_duration_ms=fp.duration_ms,
+            )
 
     return file_info
 

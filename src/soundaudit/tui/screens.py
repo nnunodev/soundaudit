@@ -25,6 +25,14 @@ from textual.widgets import (
 )
 
 from soundaudit._version import __version__
+from soundaudit.analyzer.acoustid import (
+    AcoustidDuplicateAnalyzer,
+    AcoustidGroupVerdict,
+    DupType,
+    analyze_acoustid_keepers,
+    find_acoustid_groups,
+    write_acoustid_groups,
+)
 from soundaudit.analyzer.duplicates import (
     DuplicateAnalyzer,
     DuplicateGroupResult,
@@ -35,7 +43,7 @@ from soundaudit.analyzer.duplicates import (
     write_duplicate_groups,
 )
 from soundaudit.config import AppConfig
-from soundaudit.db.store import Database
+from soundaudit.db.store import AcoustidGroup, Database
 from soundaudit.models import FileInfo
 from soundaudit.scanner.walker import discover_files
 
@@ -167,6 +175,15 @@ class DashboardScreen(Screen[None]):
                     .scalar()
                     or 0
                 )
+                acoustid_groups = (
+                    s.query(func.count(AcoustidGroup.id)).scalar() or 0
+                )
+                acoustid_files = (
+                    s.query(func.count(DBFile.id))
+                    .filter(DBFile.acoustid_group_id.is_not(None))
+                    .scalar()
+                    or 0
+                )
             lines = [
                 f"[b]Database[/b]: {db_path.name}",
                 f"[b]Total[/b]   : {total:,}",
@@ -176,6 +193,10 @@ class DashboardScreen(Screen[None]):
             if dup_groups:
                 lines.append(
                     f"[b]Dups[/b]    : {dup_groups} groups, {dup_files} files"
+                )
+            if acoustid_groups:
+                lines.append(
+                    f"[b]AcoustID[/b]: {acoustid_groups} groups, {acoustid_files} files"
                 )
             stats_widget.update("\n".join(lines))
             # highlight first nav item on stats load
@@ -231,6 +252,7 @@ class ScanScreen(Screen[None]):
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("q", "quit", "Quit"),
         ("escape", "cancel", "Cancel"),
+        ("f", "toggle_fingerprint", "Fingerprint"),
     ]
 
     # Reactive state
@@ -240,6 +262,7 @@ class ScanScreen(Screen[None]):
     files_saved: reactive[int] = reactive(0)
     current_file: reactive[str] = reactive("")
     is_scanning: reactive[bool] = reactive(False)
+    fingerprint_enabled: reactive[bool] = reactive(False)
 
     class ScanComplete(Message):
         """Emitted when scanning finishes."""
@@ -251,7 +274,7 @@ class ScanScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         with Container(id="scan-screen"):
-            yield Static("[b]Scan[/b]  [dim]esc = back[/dim]", id="scan-title")
+            yield Static("[b]Scan[/b]  [dim]esc = back  f = fingerprint[/dim]", id="scan-title")
             with Vertical(id="path-list"):
                 yield Static("[dim]Paths[/dim]", id="path-label")
             with Horizontal(id="stats-row"):
@@ -259,6 +282,7 @@ class ScanScreen(Screen[None]):
                 yield Static("Scan 0", id="stat-scanned")
                 yield Static("Skip 0", id="stat-skipped")
                 yield Static("Save 0", id="stat-saved")
+                yield Static("Fingerprint [dim]off[/dim]", id="stat-fingerprint")
             with Horizontal(id="discovery-row"):
                 yield Static("Disc", id="discovery-label")
                 yield ProgressBar(total=100, id="discovery-bar", show_eta=False)
@@ -307,7 +331,7 @@ class ScanScreen(Screen[None]):
                 node.can_focus = False
         self._draw_focus()
         log = self.query_one("#scan-log", Log)
-        log.write_line("Ready. ↑↓ move, Enter/Space toggle, Tab = actions")
+        log.write_line("Ready. ↑↓ move, Enter/Space toggle, Tab = actions, f = fingerprint")
         self._update_progress_totals()
 
     def _draw_focus(self) -> None:
@@ -437,6 +461,24 @@ class ScanScreen(Screen[None]):
                         self._action_focus_idx = i
                         break
                 self._draw_focus()
+
+    def watch_fingerprint_enabled(self, value: bool) -> None:
+        node = self.query_one("#stat-fingerprint", Static)
+        if value:
+            node.update("Fingerprint [green]ON[/green]")
+        else:
+            node.update("Fingerprint [dim]off[/dim]")
+
+    def _toggle_fingerprint(self) -> None:
+        self.fingerprint_enabled = not self.fingerprint_enabled
+        log = self.query_one("#scan-log", Log)
+        log.write_line(
+            f"Fingerprint {'enabled' if self.fingerprint_enabled else 'disabled'}."
+        )
+
+    def action_toggle_fingerprint(self) -> None:
+        if not self.is_scanning:
+            self._toggle_fingerprint()
 
     def _update_progress_totals(self) -> None:
         scan_bar = self.query_one("#scan-bar", ProgressBar)
@@ -602,7 +644,11 @@ class ScanScreen(Screen[None]):
 
         def process(p: Path) -> FileInfo:
             from soundaudit.scanner.extractor import extract_file_info
-            return extract_file_info(p)
+            return extract_file_info(
+                p,
+                fingerprint=getattr(self, "fingerprint_enabled", False),
+                fpcalc_path=cfg.fingerprinting.fpcalc_path,
+            )
 
         with ThreadPoolExecutor(max_workers=min(workers, 16)) as pool:
             log_batch: list[str] = []
@@ -648,7 +694,7 @@ class ScanScreen(Screen[None]):
 
         # Run duplicate analysis after scan
         try:
-            app.call_from_thread(log.write_line, "Analyzing duplicates...")
+            app.call_from_thread(log.write_line, "Analyzing content-hash duplicates...")
             groups = find_duplicate_groups(database)
             if groups:
                 write_duplicate_groups(database, groups)
@@ -659,9 +705,26 @@ class ScanScreen(Screen[None]):
                     f"Wasted: {_human_size(total_wasted)}.",
                 )
             else:
-                app.call_from_thread(log.write_line, "No duplicates found.")
+                app.call_from_thread(log.write_line, "No content-hash duplicates found.")
         except Exception as exc:
             app.call_from_thread(log.write_line, f"Duplicate analysis failed: {exc}")
+
+        # Run AcoustID analysis after scan (if any fingerprints were collected)
+        try:
+            app.call_from_thread(log.write_line, "Analyzing AcoustID duplicates...")
+            ac_groups = find_acoustid_groups(database)
+            if ac_groups:
+                write_acoustid_groups(database, ac_groups)
+                total_wasted = sum(r.wasted_bytes for r in ac_groups)
+                app.call_from_thread(
+                    log.write_line,
+                    f"Found {len(ac_groups)} AcoustID groups ({sum(r.file_count for r in ac_groups)} files). "
+                    f"Wasted: {_human_size(total_wasted)}.",
+                )
+            else:
+                app.call_from_thread(log.write_line, "No AcoustID duplicates found.")
+        except Exception as exc:
+            app.call_from_thread(log.write_line, f"AcoustID analysis failed: {exc}")
 
         app.call_from_thread(self.post_message, self.ScanComplete(saved=saved))
 
@@ -690,7 +753,9 @@ class ReportScreen(Screen[None]):
         ("s", "export", "Export"),
     ]
 
-    TAB_IDS: ClassVar[list[str]] = ["tab-summary", "tab-missing", "tab-duplicates", "tab-corrupt"]
+    TAB_IDS: ClassVar[list[str]] = [
+        "tab-summary", "tab-missing", "tab-duplicates", "tab-acoustid", "tab-corrupt"
+    ]
     _tab_index: reactive[int] = reactive(0)
 
     def compose(self) -> ComposeResult:
@@ -701,6 +766,7 @@ class ReportScreen(Screen[None]):
                 yield Static("Summary", id="tab-summary", classes="tab-link active-tab")
                 yield Static("Missing Tags", id="tab-missing", classes="tab-link")
                 yield Static("Duplicates", id="tab-duplicates", classes="tab-link")
+                yield Static("AcoustID Dups", id="tab-acoustid", classes="tab-link")
                 yield Static("Corrupt", id="tab-corrupt", classes="tab-link")
             yield DataTable(id="report-table")
         yield Footer()
@@ -745,6 +811,9 @@ class ReportScreen(Screen[None]):
         elif tid == "tab-duplicates":
             self._activate_tab("tab-duplicates")
             self._load_duplicates()
+        elif tid == "tab-acoustid":
+            self._activate_tab("tab-acoustid")
+            self._load_acoustid()
         elif tid == "tab-corrupt":
             self._activate_tab("tab-corrupt")
             self._load_corrupt()
@@ -761,6 +830,8 @@ class ReportScreen(Screen[None]):
                 self._load_missing_tags()
             elif widget_id == "tab-duplicates":
                 self._load_duplicates()
+            elif widget_id == "tab-acoustid":
+                self._load_acoustid()
             elif widget_id == "tab-corrupt":
                 self._load_corrupt()
 
@@ -934,6 +1005,83 @@ class ReportScreen(Screen[None]):
         except Exception:
             table.add_row("Error", "Could not load duplicates", "", "", "")
 
+    def _load_acoustid(self) -> None:
+        table = self.query_one("#report-table", DataTable)
+        table.clear(columns=True)
+        table.add_columns("Verdict", "Type", "File", "Album", "Why")
+        app = self.app  # type: ignore[attr-defined]
+        try:
+            database = Database(app.get_db_path())
+            from soundaudit.db.store import AcoustidGroup, DBFile
+            with database.session() as s:
+                groups = s.query(AcoustidGroup).all()
+            if not groups:
+                table.add_row("—", "", "No AcoustID duplicates found", "", "")
+                return
+
+            for db_group in groups:
+                with database.session() as s:
+                    files = (
+                        s.query(DBFile)
+                        .filter_by(acoustid_group_id=db_group.id)
+                        .order_by(DBFile.path)
+                        .all()
+                    )
+                if not files or len(files) < 2:
+                    continue
+
+                group_result = DuplicateGroupResult(
+                    content_hash=db_group.fingerprint,
+                    file_count=len(files),
+                    total_size_bytes=sum(f.size_bytes for f in files),
+                    files=files,
+                    group_id=db_group.id,
+                )
+                verdict = analyze_acoustid_keepers(group_result)
+
+                header_style = "bold cyan"
+                bfb_count = sum(1 for v in verdict.file_verdicts if v.dup_type == DupType.BIT_FOR_BIT)
+                trans_count = len(verdict.file_verdicts) - bfb_count
+                dup_summary_parts: list[str] = []
+                if bfb_count > 1:
+                    dup_summary_parts.append(f"{bfb_count} bit-for-bit")
+                if trans_count > 0:
+                    dup_summary_parts.append(f"{trans_count} transcode")
+
+                table.add_row(
+                    Text(f"Grp {db_group.id}", style=header_style),
+                    Text("", style=header_style),
+                    Text(f"{len(files)} files", style=header_style),
+                    Text(", ".join(dup_summary_parts) if dup_summary_parts else "", style=header_style),
+                    Text(_human_size(verdict.wasted_bytes), style="yellow"),
+                )
+
+                for fv in verdict.file_verdicts:
+                    f = fv.db_file
+                    row_style = {
+                        KeeperVerdict.KEEP: "green",
+                        KeeperVerdict.DELETE: "red",
+                        KeeperVerdict.REVIEW: "yellow",
+                    }[fv.verdict]
+                    type_style = {
+                        DupType.BIT_FOR_BIT: "green",
+                        DupType.TRANSCODE: "yellow",
+                    }[fv.dup_type]
+
+                    path = str(Path(f.path).name) if len(files) > 3 else str(Path(f.path))
+                    album = f.album or ("Single" if "single" in f.path.lower().split(os.sep) else "—")
+                    table.add_row(
+                        Text(fv.verdict.value, style=f"bold {row_style}"),
+                        Text(fv.dup_type.value, style=type_style),
+                        path,
+                        album,
+                        ", ".join(fv.reasons[:3]),
+                        label=None,
+                        style=row_style,
+                    )
+        except Exception:
+            table.add_row("Error", "", "Could not load AcoustID duplicates", "", "")
+
     def _human_size(self, size_bytes: int) -> str:
         for unit in ("B", "KB", "MB", "GB", "TB"):
             if abs(size_bytes) < 1024.0:
@@ -980,6 +1128,8 @@ class ReportScreen(Screen[None]):
                 self._export_missing_tags(db, exporter, fmt)
             elif tab == "tab-duplicates":
                 self._export_duplicates(db, exporter, fmt)
+            elif tab == "tab-acoustid":
+                self._export_acoustid(db, exporter, fmt)
             elif tab == "tab-corrupt":
                 self._export_corrupt(db, exporter, fmt)
 
@@ -1074,6 +1224,84 @@ class ReportScreen(Screen[None]):
             exporter.write_csv(csv_rows)
         else:
             exporter.write_markdown("Duplicate Groups", md_sections)
+
+    def _export_acoustid(self, db: Database, exporter, fmt: str) -> None:
+        from soundaudit.db.store import AcoustidGroup, DBFile
+        from soundaudit.reporter import MarkdownSection
+        from soundaudit.analyzer.duplicates import DuplicateGroupResult
+        from soundaudit.analyzer.acoustid import analyze_acoustid_keepers
+
+        with db.session() as s:
+            groups = s.query(AcoustidGroup).all()
+
+        group_data: list[dict] = []
+        csv_rows: list[dict] = []
+        md_sections: list[MarkdownSection] = []
+
+        for g in groups:
+            with db.session() as s:
+                files = s.query(DBFile).filter_by(acoustid_group_id=g.id).all()
+            if len(files) < 2:
+                continue
+            result = DuplicateGroupResult(
+                content_hash=g.fingerprint,
+                file_count=len(files),
+                total_size_bytes=sum(f.size_bytes for f in files),
+                files=files,
+                group_id=g.id,
+            )
+            verdict = analyze_acoustid_keepers(result)
+            file_entries = []
+            md_rows = []
+            for fv in verdict.file_verdicts:
+                f = fv.db_file
+                entry = {
+                    "path": f.path,
+                    "verdict": fv.verdict.value,
+                    "dup_type": fv.dup_type.value,
+                    "score": round(fv.score, 1),
+                    "reasons": fv.reasons,
+                    "album": f.album or "",
+                    "format": f.format or "",
+                    "bit_depth": f.bit_depth,
+                    "sample_rate_hz": f.sample_rate_hz,
+                    "size_bytes": f.size_bytes,
+                    "lossless": bool(f.lossless),
+                }
+                file_entries.append(entry)
+                csv_rows.append({"group_id": g.id, **entry})
+                md_rows.append([
+                    fv.verdict.value,
+                    fv.dup_type.value,
+                    str(Path(f.path).name),
+                    f.album or "—",
+                    ", ".join(fv.reasons[:3]),
+                ])
+            group_data.append({
+                "group_id": g.id,
+                "fingerprint": g.fingerprint[:64],
+                "total_files": len(files),
+                "wasted_bytes": verdict.wasted_bytes,
+                "files": file_entries,
+            })
+            md_sections.append(
+                MarkdownSection(
+                    heading=f"Group {g.id} — {_human_size(verdict.wasted_bytes)} wasted",
+                    headers=["Verdict", "Type", "File", "Album", "Why"],
+                    rows=md_rows,
+                    paragraph=f"Fingerprint: `{g.fingerprint[:32]}...`  |  {len(files)} files",
+                )
+            )
+
+        if fmt == "json":
+            exporter.write_json({
+                "report_type": "acoustid_duplicates",
+                "groups": group_data,
+            })
+        elif fmt == "csv":
+            exporter.write_csv(csv_rows)
+        else:
+            exporter.write_markdown("AcoustID Duplicate Groups", md_sections)
 
     def _export_corrupt(self, db: Database, exporter, fmt: str) -> None:
         from soundaudit.db.store import DBFile
