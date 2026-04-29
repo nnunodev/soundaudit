@@ -661,7 +661,9 @@ class ReportScreen(Screen[None]):
                     .limit(100)
                     .all()
                 )
-            for f in files:
+            paths = [f.path for f in files]
+            short_paths = self._shorten_paths(paths)
+            for f, sp in zip(files, short_paths):
                 missing = []
                 if not f.title:
                     missing.append("title")
@@ -669,7 +671,7 @@ class ReportScreen(Screen[None]):
                     missing.append("artist")
                 if not f.album:
                     missing.append("album")
-                table.add_row(f.path, ", ".join(missing))
+                table.add_row(sp, ", ".join(missing))
         except Exception:
             table.add_row("Error", "Could not load database")
 
@@ -683,10 +685,25 @@ class ReportScreen(Screen[None]):
             from soundaudit.db.store import DBFile
             with database.session() as s:
                 files = s.query(DBFile).filter(DBFile.is_corrupt == 1).all()
-            for f in files:
-                table.add_row(f.path, f.corruption_reason or "unknown")
+            paths = [f.path for f in files]
+            short_paths = self._shorten_paths(paths)
+            for f, sp in zip(files, short_paths):
+                table.add_row(sp, f.corruption_reason or "unknown")
         except Exception:
             table.add_row("Error", "Could not load database")
+
+    @staticmethod
+    def _shorten_paths(paths: list[str]) -> list[str]:
+        """Strip the longest common directory prefix from a list of paths."""
+        if not paths or len(paths) == 1:
+            return paths
+        import os
+        prefix = os.path.commonprefix(paths)
+        # Truncate to last separator so we don't chop in the middle of a folder name
+        sep = max(prefix.rfind("\\"), prefix.rfind("/"))
+        if sep > 0:
+            prefix = prefix[: sep + 1]
+        return [p[len(prefix) :] if p.startswith(prefix) else p for p in paths]
 
     def action_back(self) -> None:
         self.app.pop_screen()
