@@ -343,6 +343,7 @@ class ScanScreen(Screen[None]):
             )
         # ── Analysis options ──
         path_list.mount(Static("", id="sep-analyze"))
+        opt_ids = ["opt-duplicates", "opt-acoustid", "opt-transcodes"]
         path_list.mount(
             Static(
                 "[green]✓[/green] Dup Groups     [dim]content-hash duplicates (auto)[/dim]",
@@ -364,6 +365,8 @@ class ScanScreen(Screen[None]):
                 classes="path-item unchecked",
             )
         )
+        # Append options to focusable list so keyboard can reach them
+        self._path_ids.extend(opt_ids)
         # strip focus from everything non-interactive
         self.query_one("#scan-log", Log).can_focus = False
         self.query_one("#scan-title", Static).can_focus = False
