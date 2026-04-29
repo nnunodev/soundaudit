@@ -13,7 +13,6 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
-    Button,
     Checkbox,
     DataTable,
     Footer,
@@ -228,32 +227,26 @@ class ScanScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield Header()
         with Container(id="scan-screen"):
-            yield Static("[b]Scan Library[/b]", id="scan-title")
+            yield Static("[b]Scan[/b]  [dim]esc = back[/dim]", id="scan-title")
             with Vertical(id="path-list"):
-                yield Static("[dim]Select paths to scan:[/dim]", id="path-label")
-            with Horizontal(id="progress-row"):
-                with Vertical(id="progress-col"):
-                    yield Label("Discovery")
-                    yield ProgressBar(total=100, id="discovery-bar", show_eta=False)
-                    yield Label("Scanning")
-                    yield ProgressBar(total=100, id="scan-bar", show_eta=False)
-                with Vertical(id="stats-col"):
-                    yield Static("Files found: 0", id="stat-found")
-                    yield Static("Scanned: 0", id="stat-scanned")
-                    yield Static("Skipped: 0", id="stat-skipped")
-                    yield Static("Saved: 0", id="stat-saved")
-            yield Static("Waiting...", id="current-file")
+                yield Static("[dim]Paths[/dim]", id="path-label")
+            with Horizontal(id="stats-row"):
+                yield Static("Found 0", id="stat-found")
+                yield Static("Scan 0", id="stat-scanned")
+                yield Static("Skip 0", id="stat-skipped")
+                yield Static("Save 0", id="stat-saved")
+            with Horizontal(id="discovery-row"):
+                yield Static("Disc", id="discovery-label")
+                yield ProgressBar(total=100, id="discovery-bar", show_eta=False)
+            with Horizontal(id="scanning-row"):
+                yield Static("Scan", id="scanning-label")
+                yield ProgressBar(total=100, id="scan-bar", show_eta=False)
+            yield Static("", id="current-file")
             yield Log(id="scan-log")
             with Horizontal(id="scan-actions"):
-                yield Button(
-                    "Start Scan", id="btn-start", variant="primary", disabled=False
-                )
-                yield Button(
-                    "Stop Scan", id="btn-stop", variant="error", disabled=True
-                )
-                yield Button(
-                    "Back", id="btn-back", variant="default", disabled=False
-                )
+                yield Static("Start", id="btn-start", classes="scan-link")
+                yield Static("Stop", id="btn-stop", classes="scan-link dimmed")
+                yield Static("Back", id="btn-back", classes="scan-link")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -264,48 +257,58 @@ class ScanScreen(Screen[None]):
             path_list.mount(
                 Checkbox(str(p), value=True, classes="path-checkbox")
             )
-        # Focus the first checkbox so Enter/Space don't hit the button by accident
         checkboxes = list(self.query(".path-checkbox"))
         if checkboxes:
             checkboxes[0].focus()
         log = self.query_one("#scan-log", Log)
-        log.write_line("Ready to scan. Press Start Scan.")
+        log.write_line("Ready. Select paths and click Start.")
         self._update_progress_totals()
 
     def watch_files_found(self, value: int) -> None:
-        self.query_one("#stat-found", Static).update(f"Files found: {value:,}")
+        self.query_one("#stat-found", Static).update(f"Found {value:,}")
 
     def watch_files_scanned(self, value: int) -> None:
-        self.query_one("#stat-scanned", Static).update(f"Scanned: {value:,}")
+        total = max(self.files_found, 1)
+        self.query_one("#stat-scanned", Static).update(f"Scan {value:,}/{total:,}")
 
     def watch_files_skipped(self, value: int) -> None:
-        self.query_one("#stat-skipped", Static).update(f"Skipped: {value:,}")
+        self.query_one("#stat-skipped", Static).update(f"Skip {value:,}")
 
     def watch_files_saved(self, value: int) -> None:
-        self.query_one("#stat-saved", Static).update(f"Saved: {value:,}")
+        self.query_one("#stat-saved", Static).update(f"Save {value:,}")
 
     def watch_current_file(self, value: str) -> None:
         display = Path(value).name if value else ""
         self.query_one("#current-file", Static).update(
-            f"[bold]Scanning:[/bold] {display}" if display else ""
+            f"▸ {display}" if display else ""
         )
 
     def watch_is_scanning(self, scanning: bool) -> None:
-        self.query_one("#btn-start", Button).disabled = scanning
-        self.query_one("#btn-stop", Button).disabled = not scanning
-        self.query_one("#btn-back", Button).disabled = scanning
+        start = self.query_one("#btn-start", Static)
+        stop = self.query_one("#btn-stop", Static)
+        back = self.query_one("#btn-back", Static)
+        if scanning:
+            start.add_class("dimmed")
+            stop.remove_class("dimmed")
+            back.add_class("dimmed")
+        else:
+            start.remove_class("dimmed")
+            stop.add_class("dimmed")
+            back.remove_class("dimmed")
 
     def _update_progress_totals(self) -> None:
         scan_bar = self.query_one("#scan-bar", ProgressBar)
         scan_bar.total = max(self.files_found, 1)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-start":
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id == "btn-start":
             self._start_scan()
-        elif event.button.id == "btn-stop":
+        elif widget_id == "btn-stop":
             self.action_cancel()
-        elif event.button.id == "btn-back":
-            self.app.pop_screen()
+        elif widget_id == "btn-back":
+            if not self.is_scanning:
+                self.app.pop_screen()
 
     def action_cancel(self) -> None:
         if self.is_scanning:

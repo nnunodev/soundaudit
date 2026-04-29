@@ -99,13 +99,11 @@ class SoundAuditApp(App[None]):
     /* Scan screen */
     #scan-screen {
         width: auto;
-        min-width: 70;
+        min-width: 60;
         max-width: 95vw;
         height: auto;
         max-height: 95vh;
-        border: solid $primary;
         padding: 0 1;
-        align: center top;
     }
 
     #scan-title {
@@ -114,16 +112,9 @@ class SoundAuditApp(App[None]):
         padding: 0 0;
     }
 
-    #scan-paths {
-        height: auto;
-        text-align: center;
-        padding: 0 0;
-        color: $text-muted;
-    }
-
     #path-list {
         height: auto;
-        max-height: 8;
+        max-height: 6;
         overflow-y: auto;
         padding: 0 1;
         margin: 0 0;
@@ -142,23 +133,29 @@ class SoundAuditApp(App[None]):
         height: auto;
     }
 
-    #progress-row {
+    #stats-row {
+        height: auto;
+        align: center middle;
+        padding: 0 0;
+    }
+
+    #stats-row Static {
+        width: 1fr;
+        height: auto;
+        text-align: center;
+    }
+
+    #discovery-row, #scanning-row {
         height: auto;
     }
 
-    #progress-col {
-        width: 60%;
+    #discovery-label, #scanning-label {
+        width: 4;
         height: auto;
-        padding: 0 1;
     }
 
-    #stats-col {
-        width: 40%;
-        height: auto;
-        padding: 0 1;
-    }
-
-    #scan-bar, #discovery-bar {
+    #discovery-bar, #scan-bar {
+        width: 1fr;
         margin: 0;
     }
 
@@ -183,11 +180,25 @@ class SoundAuditApp(App[None]):
         padding: 0 0;
     }
 
-    #scan-actions Button {
+    #scan-actions Static {
         width: auto;
-        min-width: 8;
-        margin: 0 1;
-        padding: 0;
+        min-width: 6;
+        text-align: center;
+        padding: 0 1;
+        height: auto;
+    }
+
+    .scan-link {
+        text-style: none;
+        color: $text;
+    }
+    .scan-link.dimmed {
+        text-style: none;
+        color: $text-muted;
+    }
+    .scan-link:hover:not(.dimmed) {
+        background: $surface-lighten-1;
+        text-style: bold;
     }
 
     /* Report screen */
