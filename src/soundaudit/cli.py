@@ -12,6 +12,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from soundaudit._version import __version__
+from soundaudit.analyzer.transcode import analyze_library_transcodes
 from soundaudit.analyzer.acoustid import (
     AcoustidDuplicateAnalyzer,
     AcoustidGroupVerdict,
@@ -120,6 +121,7 @@ def report_cmd(
     db: Path | None = typer.Option(None, "--db"),
     missing_tags: bool = typer.Option(False, "--missing-tags", help="Show files with incomplete tags"),
     duplicates: bool = typer.Option(False, "--duplicates", help="Show duplicate groups"),
+    transcodes: bool = typer.Option(False, "--transcodes", help="Show suspected transcode files"),
     corrupt: bool = typer.Option(False, "--corrupt", help="Show corrupt/unreadable files"),
     output: Path | None = typer.Option(None, "--output", "-o", help="Write report to file (infer format from extension: .json, .csv, .md, .txt)"),
     fmt: str | None = typer.Option(None, "--format", help="Override format: json, csv, markdown"),
@@ -137,6 +139,8 @@ def report_cmd(
         _report_missing_tags(database, out_path, out_format)
     elif duplicates:
         _report_duplicates(database, out_path, out_format)
+    elif transcodes:
+        _report_transcodes(database, out_path, out_format)
     elif corrupt:
         _report_corrupt(database, out_path, out_format)
     else:
@@ -167,6 +171,22 @@ def _report_summary(
             or 0
         )
 
+        transcode_count = (
+            s.query(func.count(DBFile.id))
+            .filter(DBFile.is_transcode == 1)
+            .scalar()
+            or 0
+        )
+        transcode_high = (
+            s.query(func.count(DBFile.id))
+            .filter(
+                DBFile.is_transcode == 1,
+                DBFile.transcode_confidence >= 0.70,
+            )
+            .scalar()
+            or 0
+        )
+
     if out_path:
         data = {
             "report_type": "summary",
@@ -181,6 +201,8 @@ def _report_summary(
                 "missing_album": no_album,
                 "duplicate_groups": dup_groups,
                 "duplicate_files": dup_files,
+                "transcode_suspects": transcode_count,
+                "transcode_high_confidence": transcode_high,
             },
         }
         exporter = ReportExporter(out_path)
@@ -203,6 +225,8 @@ def _report_summary(
                         ["Missing album", str(no_album)],
                         ["Duplicate groups", str(dup_groups)],
                         ["Duplicate files", str(dup_files)],
+                        ["Transcode suspects", str(transcode_count)],
+                        ["Transcode high conf", str(transcode_high)],
                     ],
                 )
             ]
@@ -221,6 +245,12 @@ def _report_summary(
     table.add_row("Missing title", str(no_tags))
     table.add_row("Missing artist", str(no_artist))
     table.add_row("Missing album", str(no_album))
+    if transcode_count:
+        style = "[red]" if transcode_high > 0 else "[yellow]"
+        table.add_row(
+            "Transcode suspects",
+            f"{style}{transcode_count} ({transcode_high} high conf)[/]",
+        )
 
     console.print(table)
     console.print("\n[dim]Run with --missing-tags, --duplicates, or --corrupt for details.[/dim]")
@@ -408,6 +438,8 @@ def analyze_cmd(
     db: Path | None = typer.Option(None, "--db"),
     duplicates: bool = typer.Option(True, "--duplicates/--no-duplicates", help="Run content-hash duplicate detection"),
     acoustid: bool = typer.Option(False, "--acoustid", help="Run AcoustID fingerprint duplicate detection"),
+    transcodes: bool = typer.Option(False, "--transcodes", help="Run spectral transcode detection (slow, ffmpeg required)"),
+    workers: int = typer.Option(4, "--workers", "-j", help="Parallel workers for transcode analysis", min=1, max=16),
 ) -> None:
     """Run analysis passes on the scanned database."""
     cfg = _load_config(config)
@@ -420,6 +452,105 @@ def analyze_cmd(
         DuplicateAnalyzer(database, console=console).run()
     if acoustid:
         AcoustidDuplicateAnalyzer(database, console=console).run()
+    if transcodes:
+        analyze_library_transcodes(database, workers=workers, console=console)
+
+
+def _report_transcodes(
+    database: Database,
+    out_path: Path | None = None,
+    out_format: str = "console",
+) -> None:
+    from soundaudit.db.store import DBFile
+
+    with database.session() as s:
+        files = (
+            s.query(DBFile)
+            .filter(DBFile.is_transcode == 1)
+            .order_by(DBFile.transcode_confidence.desc())
+            .limit(100)
+            .all()
+        )
+
+    if not files:
+        msg = "[green]No transcode suspects found.[/green]"
+        if out_path:
+            exporter = ReportExporter(out_path)
+            if out_format == "json":
+                exporter.write_json({"report_type": "transcodes", "files": []})
+            elif out_format == "csv":
+                exporter.write_csv([])
+            else:
+                exporter.write_markdown(
+                    "Transcodes",
+                    [MarkdownSection("Transcode Suspects", ["File", "Confidence", "Reason"], [], "No transcode suspects found.")],
+                )
+            console.print(f"[green]Saved to {out_path}[/green]")
+        else:
+            console.print(msg)
+        return
+
+    if out_path:
+        rows = [
+            {
+                "file": f.path,
+                "confidence": f.transcode_confidence,
+                "reason": f.transcode_reason or "",
+                "cutoff_hz": f.spectral_cutoff_hz,
+                "format": f.format,
+                "bit_depth": f.bit_depth,
+                "sample_rate_hz": f.sample_rate_hz,
+            }
+            for f in files
+        ]
+        exporter = ReportExporter(out_path)
+        if out_format == "json":
+            exporter.write_json({"report_type": "transcodes", "files": rows})
+        elif out_format == "csv":
+            exporter.write_csv(rows)
+        else:
+            md_rows = [
+                [
+                    str(Path(r["file"]).name),
+                    f"{r['confidence']:.0%}",
+                    r["reason"] or "—",
+                    f"{r['cutoff_hz']:,}Hz" if r["cutoff_hz"] else "—",
+                ]
+                for r in rows
+            ]
+            exporter.write_markdown(
+                "Transcode Suspects",
+                [MarkdownSection("Suspected Transcodes", ["File", "Confidence", "Reason", "Cutoff"], md_rows)],
+            )
+        console.print(f"[green]Saved to {out_path}[/green]")
+        return
+
+    table = Table(title="Suspected Transcodes", show_header=True)
+    table.add_column("File", style="dim", max_width=60)
+    table.add_column("Confidence", width=10)
+    table.add_column("Cutoff", width=8)
+    table.add_column("Reason", max_width=40)
+
+    for f in files:
+        conf_style = {
+            (0.7, 1.0): "[bold red]",
+            (0.4, 0.7): "[yellow]",
+        }
+        style = "[dim]"
+        for (lo, hi), s in conf_style.items():
+            if lo <= f.transcode_confidence <= hi:
+                style = s
+                break
+        cutoff = f"{f.spectral_cutoff_hz:,}Hz" if f.spectral_cutoff_hz else "—"
+        table.add_row(
+            str(Path(f.path).name),
+            f"{style}{f.transcode_confidence:.0%}[/]",
+            cutoff,
+            f.transcode_reason or "—",
+        )
+
+    console.print(table)
+    console.print(f"\nShowing {len(files)} suspects (sorted by confidence).")
 
 
 def _report_duplicates(

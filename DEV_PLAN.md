@@ -69,11 +69,19 @@ soundaudit report --corrupt
 - [x] CLI: `soundaudit analyze --acoustid`
 - [x] CLI: `soundaudit scan --fingerprint` (wired through to extractor)
 
-### Phase 2 — Transcode Detection (High value, high effort)
-- [ ] `ffprobe` spectral frequency analysis (cutoff detection)
-- [ ] FLAC fake detection: sudden brickwall above 16kHz = likely MP3 source
-- [ ] Report: "This FLAC has a 16kHz wall → likely transcoded from 320kbps MP3"
-- [ ] Score confidence level (low/medium/high) per file
+### Phase 2 — Transcode Detection ✅ (Done)
+- [x] `ffmpeg` highpass + volumedetect spectral analysis
+- [x] Measure energy at 16k, 18.5k, 20k, 21k Hz bands
+- [x] Sample 2 points per track (25% and 60%), keep best per band
+- [x] Brickwall detection: sharp dB drop between adjacent bands
+- [x] Confidence scoring: 0.0 (genuine) → 0.95 (definitely transcode)
+- [x] CLI: `soundaudit analyze --transcodes --workers N`
+- [x] CLI: `soundaudit report --transcodes`
+- [x] TUI: "Transcodes" tab with confidence/cutoff/reason columns
+- [x] TUI: Dashboard shows transcode suspect count
+- [x] DB: `spectral_cutoff_hz`, `transcode_reason` columns (auto-migrated)
+- [x] Batch parallel analysis with progress logging
+- [x] 13 tests covering genuine, 128k, 320k, ambiguous, silence, empty cases
 
 ### Phase 3 — MusicBrainz Resolver (Medium value, high effort)
 - [ ] Search by existing ISRC (if present) or acoustid

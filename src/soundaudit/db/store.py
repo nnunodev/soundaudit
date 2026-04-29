@@ -86,6 +86,8 @@ class DBFile(Base):  # type: ignore[valid-type,misc]
     is_transcode = Column(Integer, default=0)
     transcode_confidence = Column(Float, default=0.0)
     corruption_reason = Column(Text)
+    spectral_cutoff_hz = Column(Integer)
+    transcode_reason = Column(Text)
     duplicate_group_id = Column(Integer)
     acoustid_group_id = Column(Integer, index=True)
 

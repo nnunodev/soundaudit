@@ -184,6 +184,21 @@ class DashboardScreen(Screen[None]):
                     .scalar()
                     or 0
                 )
+                transcode_count = (
+                    s.query(func.count(DBFile.id))
+                    .filter(DBFile.is_transcode == 1)
+                    .scalar()
+                    or 0
+                )
+                transcode_high = (
+                    s.query(func.count(DBFile.id))
+                    .filter(
+                        DBFile.is_transcode == 1,
+                        DBFile.transcode_confidence >= 0.70,
+                    )
+                    .scalar()
+                    or 0
+                )
             lines = [
                 f"[b]Database[/b]: {db_path.name}",
                 f"[b]Total[/b]   : {total:,}",
@@ -197,6 +212,11 @@ class DashboardScreen(Screen[None]):
             if acoustid_groups:
                 lines.append(
                     f"[b]AcoustID[/b]: {acoustid_groups} groups, {acoustid_files} files"
+                )
+            if transcode_count:
+                style = "[red]" if transcode_high > 0 else "[yellow]"
+                lines.append(
+                    f"[b]Transc[/b]  : {style}{transcode_count} suspects ({transcode_high} high)[/]"
                 )
             stats_widget.update("\n".join(lines))
             # highlight first nav item on stats load
@@ -754,7 +774,7 @@ class ReportScreen(Screen[None]):
     ]
 
     TAB_IDS: ClassVar[list[str]] = [
-        "tab-summary", "tab-missing", "tab-duplicates", "tab-acoustid", "tab-corrupt"
+        "tab-summary", "tab-missing", "tab-duplicates", "tab-acoustid", "tab-transcodes", "tab-corrupt"
     ]
     _tab_index: reactive[int] = reactive(0)
 
@@ -767,6 +787,7 @@ class ReportScreen(Screen[None]):
                 yield Static("Missing Tags", id="tab-missing", classes="tab-link")
                 yield Static("Duplicates", id="tab-duplicates", classes="tab-link")
                 yield Static("AcoustID Dups", id="tab-acoustid", classes="tab-link")
+                yield Static("Transcodes", id="tab-transcodes", classes="tab-link")
                 yield Static("Corrupt", id="tab-corrupt", classes="tab-link")
             yield DataTable(id="report-table")
         yield Footer()
@@ -814,6 +835,9 @@ class ReportScreen(Screen[None]):
         elif tid == "tab-acoustid":
             self._activate_tab("tab-acoustid")
             self._load_acoustid()
+        elif tid == "tab-transcodes":
+            self._activate_tab("tab-transcodes")
+            self._load_transcodes()
         elif tid == "tab-corrupt":
             self._activate_tab("tab-corrupt")
             self._load_corrupt()
@@ -832,6 +856,8 @@ class ReportScreen(Screen[None]):
                 self._load_duplicates()
             elif widget_id == "tab-acoustid":
                 self._load_acoustid()
+            elif widget_id == "tab-transcodes":
+                self._load_transcodes()
             elif widget_id == "tab-corrupt":
                 self._load_corrupt()
 
@@ -1082,6 +1108,48 @@ class ReportScreen(Screen[None]):
         except Exception:
             table.add_row("Error", "", "Could not load AcoustID duplicates", "", "")
 
+    def _load_transcodes(self) -> None:
+        table = self.query_one("#report-table", DataTable)
+        table.clear(columns=True)
+        table.add_columns("File", "Confidence", "Cutoff", "Reason")
+        app = self.app  # type: ignore[attr-defined]
+        try:
+            database = Database(app.get_db_path())
+            from soundaudit.db.store import DBFile
+            with database.session() as s:
+                files = (
+                    s.query(DBFile)
+                    .filter(DBFile.is_transcode == 1)
+                    .order_by(DBFile.transcode_confidence.desc())
+                    .limit(100)
+                    .all()
+                )
+            if not files:
+                table.add_row("—", "", "", "No transcode suspects found")
+                return
+
+            paths = [f.path for f in files]
+            short_paths = self._shorten_paths(paths)
+            for f, sp in zip(files, short_paths):
+                conf_style = {
+                    (0.7, 1.0): "[bold red]",
+                    (0.4, 0.7): "[yellow]",
+                }
+                style = "[dim]"
+                for (lo, hi), s in conf_style.items():
+                    if lo <= f.transcode_confidence <= hi:
+                        style = s
+                        break
+                cutoff = f"{f.spectral_cutoff_hz:,}Hz" if f.spectral_cutoff_hz else "—"
+                table.add_row(
+                    sp,
+                    f"{style}{f.transcode_confidence:.0%}[/]",
+                    cutoff,
+                    f.transcode_reason or "—",
+                )
+        except Exception:
+            table.add_row("Error", "", "", "Could not load transcodes")
+
     def _human_size(self, size_bytes: int) -> str:
         for unit in ("B", "KB", "MB", "GB", "TB"):
             if abs(size_bytes) < 1024.0:
@@ -1130,6 +1198,8 @@ class ReportScreen(Screen[None]):
                 self._export_duplicates(db, exporter, fmt)
             elif tab == "tab-acoustid":
                 self._export_acoustid(db, exporter, fmt)
+            elif tab == "tab-transcodes":
+                self._export_transcodes(db, exporter, fmt)
             elif tab == "tab-corrupt":
                 self._export_corrupt(db, exporter, fmt)
 
@@ -1302,6 +1372,46 @@ class ReportScreen(Screen[None]):
             exporter.write_csv(csv_rows)
         else:
             exporter.write_markdown("AcoustID Duplicate Groups", md_sections)
+
+    def _export_transcodes(self, db: Database, exporter, fmt: str) -> None:
+        from soundaudit.db.store import DBFile
+        from soundaudit.reporter import MarkdownSection
+        with db.session() as s:
+            files = (
+                s.query(DBFile)
+                .filter(DBFile.is_transcode == 1)
+                .order_by(DBFile.transcode_confidence.desc())
+                .all()
+            )
+        rows = [
+            {
+                "file": f.path,
+                "confidence": f.transcode_confidence,
+                "cutoff_hz": f.spectral_cutoff_hz,
+                "reason": f.transcode_reason or "",
+                "format": f.format,
+                "bit_depth": f.bit_depth,
+            }
+            for f in files
+        ]
+        if fmt == "json":
+            exporter.write_json({"report_type": "transcodes", "files": rows})
+        elif fmt == "csv":
+            exporter.write_csv(rows)
+        else:
+            md_rows = [
+                [
+                    str(Path(r["file"]).name),
+                    f"{r['confidence']:.0%}",
+                    f"{r['cutoff_hz']:,}Hz" if r["cutoff_hz"] else "—",
+                    r["reason"] or "—",
+                ]
+                for r in rows
+            ] if rows else []
+            exporter.write_markdown(
+                "Transcode Suspects",
+                [MarkdownSection("Suspected Transcodes", ["File", "Confidence", "Cutoff", "Reason"], md_rows)],
+            )
 
     def _export_corrupt(self, db: Database, exporter, fmt: str) -> None:
         from soundaudit.db.store import DBFile
