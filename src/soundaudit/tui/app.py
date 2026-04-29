@@ -196,7 +196,7 @@ class SoundAuditApp(App[None]):
         text-style: none;
         color: $text-muted;
     }
-    .scan-link:hover:not(.dimmed) {
+    .scan-link:hover {
         background: $surface-lighten-1;
         text-style: bold;
     }
