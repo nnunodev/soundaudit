@@ -43,59 +43,87 @@ class SoundAuditApp(App[None]):
     }
 
     #dashboard {
-        width: 54;
+        width: auto;
+        min-width: 44;
+        max-width: 95vw;
         height: auto;
         border: solid $primary;
-        padding: 1 1;
+        padding: 0 1;
     }
 
     #title {
         text-align: center;
-        padding-bottom: 1;
-    }
-
-    #stats-panel {
-        width: 100%;
         height: auto;
-        padding: 1 0;
+        padding: 0 0;
     }
 
-    #actions-panel {
-        width: 100%;
+    #stats {
+        height: auto;
+        padding: 0 0;
+    }
+
+    #dash-sep {
+        height: auto;
+        color: $surface-lighten-2;
+        text-align: center;
+    }
+
+    #actions-row {
         height: auto;
         align: center middle;
+        padding: 0 0;
     }
 
-    #actions-panel Button {
-        width: 80%;
-        margin: 0 0;
+    #actions-row Static {
+        width: auto;
+        height: auto;
+        min-width: 12;
+        min-height: 1;
+        text-align: center;
+        padding: 0 1;
+    }
+
+    .nav-item {
+        text-style: none;
+        color: $text;
+    }
+    .nav-item:hover {
+        background: $surface-lighten-1;
+        text-style: bold;
+    }
+    .nav-item.focused-nav {
+        background: $primary-darken-2;
+        text-style: bold;
     }
 
     /* Scan screen */
     #scan-screen {
-        width: 100;
-        height: 36;
+        width: auto;
+        min-width: 70;
+        max-width: 95vw;
+        height: auto;
+        max-height: 95vh;
         border: solid $primary;
-        padding: 1 1;
+        padding: 0 1;
         align: center top;
     }
 
     #scan-title {
         height: auto;
         text-align: center;
-        padding-bottom: 0;
+        padding: 0 0;
     }
 
     #scan-paths {
         height: auto;
         text-align: center;
-        padding: 1 0;
+        padding: 0 0;
         color: $text-muted;
     }
 
     #path-list {
         height: auto;
-        max-height: 10;
+        max-height: 8;
         overflow-y: auto;
         padding: 0 1;
         margin: 0 0;
@@ -131,7 +159,7 @@ class SoundAuditApp(App[None]):
     }
 
     #scan-bar, #discovery-bar {
-        margin: 1 0;
+        margin: 0;
     }
 
     #current-file {
@@ -143,7 +171,7 @@ class SoundAuditApp(App[None]):
 
     #scan-log {
         height: 1fr;
-        min-height: 6;
+        min-height: 4;
         padding: 0 1;
         border: solid $surface-lighten-1;
     }
@@ -156,22 +184,27 @@ class SoundAuditApp(App[None]):
     }
 
     #scan-actions Button {
-        width: 30%;
+        width: auto;
+        min-width: 8;
         margin: 0 1;
+        padding: 0;
     }
 
     /* Report screen */
     #report-screen {
-        width: 80;
-        height: 28;
+        width: auto;
+        min-width: 60;
+        max-width: 95vw;
+        height: auto;
+        max-height: 95vh;
         border: solid $primary;
-        padding: 1 1;
+        padding: 0 1;
     }
 
     #report-title {
         height: auto;
         text-align: center;
-        padding-bottom: 0;
+        padding: 0 0;
     }
 
     #report-tabs {
@@ -180,45 +213,66 @@ class SoundAuditApp(App[None]):
         padding: 0 0;
     }
 
-    #report-tabs Button {
-        width: 30%;
-        margin: 0 1;
+    .tab-link {
+        width: auto;
+        min-width: 10;
+        min-height: 1;
+        text-style: none;
+        color: $text;
+        padding: 0 1;
+        height: auto;
+    }
+    .tab-link.active-tab {
+        text-style: bold underline;
+        color: $primary;
+    }
+    .tab-link.focused-nav {
+        background: $primary-darken-2;
     }
 
     #report-table {
         height: 1fr;
         width: 100%;
+        min-height: 6;
     }
 
     /* Reset dialog */
     #reset-dialog {
-        width: 50;
+        width: auto;
+        min-width: 40;
+        max-width: 90vw;
         height: auto;
         border: solid $error;
-        padding: 1 2;
+        padding: 0 1;
         background: $surface;
     }
 
     #reset-title {
         text-align: center;
-        padding-bottom: 1;
+        padding-bottom: 0;
+        height: auto;
     }
 
     #reset-message {
         text-align: center;
-        padding-bottom: 1;
+        padding-bottom: 0;
+        height: auto;
     }
 
     #reset-actions {
         align: center middle;
         height: auto;
+        padding: 0 0;
     }
 
-    #reset-actions Button {
-        width: 40%;
-        margin: 0 1;
+    #reset-actions Static {
+        width: auto;
+        min-width: 10;
+        text-align: center;
+        padding: 0 1;
     }
     """
+
 
     SCREENS = {
         "dashboard": DashboardScreen,

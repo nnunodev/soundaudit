@@ -38,29 +38,75 @@ class DashboardScreen(Screen[None]):
         ("q", "quit", "Quit"),
         ("s", "scan", "Scan"),
         ("r", "report", "Report"),
+        ("R", "reset", "Reset DB"),
     ]
+
+    NAV_IDS: ClassVar[list[str]] = [
+        "btn-scan", "btn-report", "btn-reset", "btn-quit"
+    ]
+    _nav_index: reactive[int] = reactive(0)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Container(id="dashboard"):
-            with Vertical(id="stats-panel"):
-                yield Static(
-                    f"[b]SoundAudit[/b] [dim]v{__version__}[/dim]\n",
-                    id="title",
-                )
-                yield Static("Loading stats...", id="stats")
-            with Vertical(id="actions-panel"):
-                yield Button("Scan Library", id="btn-scan", variant="primary")
-                yield Button("Reports", id="btn-report", variant="success")
-                yield Button("Reset DB", id="btn-reset", variant="warning")
-                yield Button("Quit", id="btn-quit", variant="error")
+            yield Static(
+                f"[b]SoundAudit[/b] [dim]v{__version__}[/dim]",
+                id="title",
+            )
+            yield Static("Loading stats...", id="stats")
+            yield Static("─" * 40, id="dash-sep")
+            with Horizontal(id="actions-row"):
+                yield Static("▸ Scan       [dim]s[/dim]", id="btn-scan", classes="nav-item")
+                yield Static("▸ Reports    [dim]r[/dim]", id="btn-report", classes="nav-item")
+                yield Static("▸ Reset DB   [dim]R[/dim]", id="btn-reset", classes="nav-item")
+                yield Static("▸ Quit       [dim]q[/dim]", id="btn-quit", classes="nav-item")
         yield Footer()
 
     def on_mount(self) -> None:
         self._refresh_stats()
+        self.query_one(f"#{self._nav_sel()}", Static).focus()
 
     def on_screen_resume(self) -> None:
         self._refresh_stats()
+
+    def _nav_sel(self) -> str:
+        return self.NAV_IDS[self._nav_index]
+
+    def _nav_move(self, delta: int) -> None:
+        old_id = self._nav_sel()
+        self._nav_index = max(0, min(len(self.NAV_IDS) - 1, self._nav_index + delta))
+        new_id = self._nav_sel()
+        if old_id != new_id:
+            self.query_one(f"#{old_id}", Static).remove_class("focused-nav")
+            node = self.query_one(f"#{new_id}", Static)
+            node.add_class("focused-nav")
+            node.focus()
+
+    def watch__nav_index(self, index: int) -> None:
+        pass  # handled in _nav_move
+
+    def on_key(self, event) -> None:
+        key = event.key
+        if key in ("down", "right", "j", "l"):
+            self._nav_move(1)
+        elif key in ("up", "left", "k", "h"):
+            self._nav_move(-1)
+        elif key in ("enter", "space"):
+            self._nav_action()
+        else:
+            return
+        event.stop()
+
+    def _nav_action(self) -> None:
+        wid = self._nav_sel()
+        if wid == "btn-scan":
+            self.action_scan()
+        elif wid == "btn-report":
+            self.action_report()
+        elif wid == "btn-reset":
+            self._confirm_reset()
+        elif wid == "btn-quit":
+            self.action_quit()
 
     def _refresh_stats(self) -> None:
         stats_widget = self.query_one("#stats", Static)
@@ -103,28 +149,27 @@ class DashboardScreen(Screen[None]):
                     or 0
                 )
             lines = [
-                f"[b]Database[/b]: {db_path}",
-                "",
-                "[b]Library Stats[/b]",
-                f"  Total files  : {total:,}",
-                f"  FLAC         : {flac:,}",
-                f"  MP3          : {mp3:,}",
-                f"  Corrupt      : { '[red]' + str(corrupt) + '[/red]' if corrupt else '0'}",
-                f"  Missing tags : { '[yellow]' + str(no_tags) + '[/yellow]' if no_tags else '0'}",
+                f"[b]Database[/b]: {db_path.name}",
+                f"[b]Total[/b]   : {total:,}",
+                f"[b]FLAC[/b]    : {flac:,}  [b]MP3[/b]: {mp3:,}",
+                f"[b]Corrupt[/b] : { '[red]' + str(corrupt) + '[/red]' if corrupt else '0'}  [b]Missing[/b]: { '[yellow]' + str(no_tags) + '[/yellow]' if no_tags else '0'}",
             ]
             stats_widget.update("\n".join(lines))
+            # highlight first nav item on stats load
+            self.query_one(f"#{self._nav_sel()}", Static).add_class("focused-nav")
         except Exception:
             stats_widget.update("[red]Error loading database stats.[/red]")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-scan":
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id == "btn-scan":
             self.action_scan()
-        elif event.button.id == "btn-report":
+        elif widget_id == "btn-report":
             self.action_report()
-        elif event.button.id == "btn-reset":
+        elif widget_id == "btn-reset":
             self._confirm_reset()
-        elif event.button.id == "btn-quit":
-            self.app.exit()
+        elif widget_id == "btn-quit":
+            self.action_quit()
 
     def _confirm_reset(self) -> None:
         self.app.push_screen(ResetConfirmScreen(), self._do_reset)
@@ -149,6 +194,9 @@ class DashboardScreen(Screen[None]):
 
     def action_report(self) -> None:
         self.app.push_screen("report")
+
+    def action_reset(self) -> None:
+        self._confirm_reset()
 
     def action_quit(self) -> None:
         self.app.exit()
@@ -471,27 +519,81 @@ class ReportScreen(Screen[None]):
         ("escape", "back", "Back"),
     ]
 
+    TAB_IDS: ClassVar[list[str]] = ["tab-summary", "tab-missing", "tab-corrupt"]
+    _tab_index: reactive[int] = reactive(0)
+
     def compose(self) -> ComposeResult:
         yield Header()
         with Container(id="report-screen"):
             yield Static("[b]Reports[/b]", id="report-title")
             with Horizontal(id="report-tabs"):
-                yield Button("Summary", id="tab-summary", variant="primary")
-                yield Button("Missing Tags", id="tab-missing", variant="default")
-                yield Button("Corrupt", id="tab-corrupt", variant="default")
+                yield Static("Summary", id="tab-summary", classes="tab-link active-tab")
+                yield Static("Missing Tags", id="tab-missing", classes="tab-link")
+                yield Static("Corrupt", id="tab-corrupt", classes="tab-link")
             yield DataTable(id="report-table")
         yield Footer()
 
     def on_mount(self) -> None:
         self._load_summary()
+        self._tab_focus()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "tab-summary":
+    def _tab_focus(self) -> None:
+        self.query_one(f"#{self.TAB_IDS[self._tab_index]}", Static).focus()
+
+    def on_key(self, event) -> None:
+        key = event.key
+        focused_wid = self.focused.id if self.focused else None
+        is_table_focused = focused_wid == "report-table"
+
+        if key in ("left", "right", "h", "l"):
+            self._tab_move(-1 if key in ("left", "h") else 1)
+        elif key in ("up", "down", "k", "j") and not is_table_focused:
+            self._tab_move(-1 if key in ("up", "k") else 1)
+        elif key in ("enter", "space"):
+            if is_table_focused:
+                return  # let DataTable handle it
+            self._tab_activate()
+        else:
+            return
+        event.stop()
+
+    def _tab_move(self, delta: int) -> None:
+        self._tab_index = (self._tab_index + delta) % len(self.TAB_IDS)
+        self._tab_focus()
+        self._tab_activate()
+
+    def _tab_activate(self) -> None:
+        tid = self.TAB_IDS[self._tab_index]
+        if tid == "tab-summary":
+            self._activate_tab("tab-summary")
             self._load_summary()
-        elif event.button.id == "tab-missing":
+        elif tid == "tab-missing":
+            self._activate_tab("tab-missing")
             self._load_missing_tags()
-        elif event.button.id == "tab-corrupt":
+        elif tid == "tab-corrupt":
+            self._activate_tab("tab-corrupt")
             self._load_corrupt()
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id in self.TAB_IDS:
+            self._tab_index = self.TAB_IDS.index(widget_id)
+            self._tab_focus()
+            self._activate_tab(widget_id)
+            if widget_id == "tab-summary":
+                self._load_summary()
+            elif widget_id == "tab-missing":
+                self._load_missing_tags()
+            elif widget_id == "tab-corrupt":
+                self._load_corrupt()
+
+    def _activate_tab(self, active_id: str) -> None:
+        for tid in self.TAB_IDS:
+            widget = self.query_one(f"#{tid}", Static)
+            if tid == active_id:
+                widget.add_class("active-tab")
+            else:
+                widget.remove_class("active-tab")
 
     def _load_summary(self) -> None:
         table = self.query_one("#report-table", DataTable)
@@ -596,6 +698,9 @@ class ReportScreen(Screen[None]):
 class ResetConfirmScreen(ModalScreen[bool]):
     """Modal dialog to confirm database reset."""
 
+    NAV_IDS: ClassVar[list[str]] = ["btn-cancel", "btn-confirm"]
+    _nav_index: reactive[int] = reactive(0)
+
     def compose(self) -> ComposeResult:
         yield Container(
             Static("[b]Reset Database?[/b]", id="reset-title"),
@@ -605,19 +710,54 @@ class ResetConfirmScreen(ModalScreen[bool]):
                 id="reset-message",
             ),
             Horizontal(
-                Button("Cancel", id="btn-cancel", variant="default"),
-                Button("Reset", id="btn-confirm", variant="error"),
+                Static("▸ Cancel", id="btn-cancel", classes="nav-item"),
+                Static("▸ Reset", id="btn-confirm", classes="nav-item"),
                 id="reset-actions",
             ),
             id="reset-dialog",
         )
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-confirm":
+    def on_mount(self) -> None:
+        self._focus_nav()
+
+    def _focus_nav(self) -> None:
+        sel = self.NAV_IDS[self._nav_index]
+        node = self.query_one(f"#{sel}", Static)
+        node.add_class("focused-nav")
+        node.focus()
+
+    def _nav_move(self, delta: int) -> None:
+        old = self.NAV_IDS[self._nav_index]
+        self._nav_index = max(0, min(len(self.NAV_IDS) - 1, self._nav_index + delta))
+        new = self.NAV_IDS[self._nav_index]
+        if old != new:
+            self.query_one(f"#{old}", Static).remove_class("focused-nav")
+            self.query_one(f"#{new}", Static).add_class("focused-nav").focus()
+
+    def on_key(self, event) -> None:
+        key = event.key
+        if key in ("left", "up", "h", "k"):
+            self._nav_move(-1)
+        elif key in ("right", "down", "l", "j"):
+            self._nav_move(1)
+        elif key in ("enter", "space"):
+            self._nav_action()
+        elif key in ("escape", "q"):
+            self.dismiss(False)
+        else:
+            return
+        event.stop()
+
+    def _nav_action(self) -> None:
+        sel = self.NAV_IDS[self._nav_index]
+        if sel == "btn-confirm":
             self.dismiss(True)
         else:
             self.dismiss(False)
 
-    def on_key(self, event) -> None:
-        if event.key == "escape":
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id == "btn-confirm":
+            self.dismiss(True)
+        else:
             self.dismiss(False)
