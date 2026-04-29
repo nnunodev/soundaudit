@@ -300,15 +300,55 @@ class ScanScreen(Screen[None]):
     def on_key(self, event) -> None:
         fid = getattr(self.focused, "id", None)
         if event.key in ("up", "k"):
-            self._refocus_path(self._path_focus_idx - 1)
-            event.stop()
+            if fid and fid.startswith("path-"):
+                self._refocus_path(self._path_focus_idx - 1)
+                event.stop()
         elif event.key in ("down", "j"):
-            self._refocus_path(self._path_focus_idx + 1)
+            if fid and fid.startswith("path-"):
+                self._refocus_path(self._path_focus_idx + 1)
+                event.stop()
+        elif event.key in ("tab", "right", "l"):
+            self._focus_actions()
+            event.stop()
+        elif event.key in ("shift+tab", "left", "h"):
+            self._focus_paths()
             event.stop()
         elif event.key in ("enter", "space"):
             if fid and fid.startswith("path-"):
                 self._toggle_path(fid)
                 event.stop()
+            elif fid and fid.startswith("btn-"):
+                self._activate_action(fid)
+                event.stop()
+
+    def _focus_paths(self) -> None:
+        self._clear_action_focus()
+        self._refocus_path(self._path_focus_idx)
+
+    def _focus_actions(self) -> None:
+        for pid in self._path_ids:
+            self.query_one(f"#{pid}", Static).remove_class("focused-nav")
+        start = self.query_one("#btn-start", Static)
+        stop = self.query_one("#btn-stop", Static)
+        back = self.query_one("#btn-back", Static)
+        for btn in (start, stop, back):
+            if "dimmed" not in btn.classes:
+                btn.add_class("focused-nav").focus()
+                return
+        start.add_class("focused-nav").focus()
+
+    def _clear_action_focus(self) -> None:
+        for bid in ("btn-start", "btn-stop", "btn-back"):
+            self.query_one(f"#{bid}", Static).remove_class("focused-nav")
+
+    def _activate_action(self, bid: str) -> None:
+        if bid == "btn-start":
+            self._start_scan()
+        elif bid == "btn-stop":
+            self.action_cancel()
+        elif bid == "btn-back":
+            if not self.is_scanning:
+                self.app.pop_screen()
 
     def watch_files_found(self, value: int) -> None:
         self.query_one("#stat-found", Static).update(f"Found {value:,}")
@@ -341,6 +381,11 @@ class ScanScreen(Screen[None]):
             start.remove_class("dimmed")
             stop.add_class("dimmed")
             back.remove_class("dimmed")
+        # refresh focus highlight if an action is focused
+        fid = getattr(self.focused, "id", None)
+        if fid and fid.startswith("btn-"):
+            self._clear_action_focus()
+            self._focus_actions()
 
     def _update_progress_totals(self) -> None:
         scan_bar = self.query_one("#scan-bar", ProgressBar)

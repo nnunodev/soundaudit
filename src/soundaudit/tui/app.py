@@ -206,6 +206,10 @@ class SoundAuditApp(App[None]):
         text-style: none;
         color: $text-muted;
     }
+    .scan-link.focused-nav {
+        background: $primary-darken-2;
+        text-style: bold;
+    }
     .scan-link:hover {
         background: $surface-lighten-1;
         text-style: bold;
