@@ -255,35 +255,57 @@ class ScanScreen(Screen[None]):
         short_paths = ReportScreen._shorten_paths(full_paths)
         self._path_map: dict[str, tuple[str, str]] = {}
         self._path_selected: dict[str, bool] = {}
+        self._path_ids: list[str] = []
+        self._path_focus_idx: int = 0
         path_list = self.query_one("#path-list", Vertical)
         for idx, (full, short) in enumerate(zip(full_paths, short_paths)):
             pid = f"path-{idx}"
             self._path_map[pid] = (full, short)
             self._path_selected[pid] = True
+            self._path_ids.append(pid)
             path_list.mount(
                 Static(
-                    f"[x] {short}",
+                    f"[green]✓[/green] {short}",
                     id=pid,
-                    classes="path-item",
+                    classes="path-item checked",
                 )
             )
-        items = list(self.query(".path-item"))
-        if items:
-            items[0].focus()
+        self._refocus_path(0)
         log = self.query_one("#scan-log", Log)
-        log.write_line("Ready. Toggle paths with click or Enter.")
+        log.write_line("Ready. ↑↓ move, Enter/Space toggle")
         self._update_progress_totals()
+
+    def _refocus_path(self, idx: int) -> None:
+        self._path_focus_idx = max(0, min(len(self._path_ids) - 1, idx))
+        pid = self._path_ids[self._path_focus_idx]
+        for p in self._path_ids:
+            self.query_one(f"#{p}", Static).remove_class("focused-nav")
+        self.query_one(f"#{pid}", Static).add_class("focused-nav").focus()
 
     def _toggle_path(self, pid: str) -> None:
         full, short = self._path_map[pid]
         was = self._path_selected[pid]
         self._path_selected[pid] = not was
-        mark = "[x]" if self._path_selected[pid] else "[ ]"
-        self.query_one(f"#{pid}", Static).update(f"{mark} {short}")
+        checked = self._path_selected[pid]
+        node = self.query_one(f"#{pid}", Static)
+        if checked:
+            node.update(f"[green]✓[/green] {short}")
+            node.add_class("checked")
+            node.remove_class("unchecked")
+        else:
+            node.update(f"[red]✗[/red] {short}")
+            node.add_class("unchecked")
+            node.remove_class("checked")
 
     def on_key(self, event) -> None:
         fid = getattr(self.focused, "id", None)
-        if event.key in ("enter", "space"):
+        if event.key in ("up", "k"):
+            self._refocus_path(self._path_focus_idx - 1)
+            event.stop()
+        elif event.key in ("down", "j"):
+            self._refocus_path(self._path_focus_idx + 1)
+            event.stop()
+        elif event.key in ("enter", "space"):
             if fid and fid.startswith("path-"):
                 self._toggle_path(fid)
                 event.stop()

@@ -132,8 +132,15 @@ class SoundAuditApp(App[None]):
         text-style: none;
         color: $text;
     }
-    .path-item:hover {
-        background: $surface-lighten-1;
+    .path-item.focused-nav {
+        background: $primary-darken-2;
+    }
+    .path-item.checked {
+        text-style: none;
+    }
+    .path-item.unchecked {
+        text-style: none;
+        color: $text-muted;
     }
 
     #stats-row {
