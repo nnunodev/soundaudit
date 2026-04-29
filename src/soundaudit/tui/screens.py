@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
 
@@ -16,6 +17,7 @@ from textual.widgets import (
     DataTable,
     Footer,
     Header,
+    Input,
     Label,
     Log,
     ProgressBar,
@@ -23,6 +25,15 @@ from textual.widgets import (
 )
 
 from soundaudit._version import __version__
+from soundaudit.analyzer.duplicates import (
+    DuplicateAnalyzer,
+    DuplicateGroupResult,
+    KeeperVerdict,
+    _human_size,
+    analyze_keepers,
+    find_duplicate_groups,
+    write_duplicate_groups,
+)
 from soundaudit.config import AppConfig
 from soundaudit.db.store import Database
 from soundaudit.models import FileInfo
@@ -119,7 +130,7 @@ class DashboardScreen(Screen[None]):
         try:
             database = Database(str(db_path))
             from sqlalchemy import func
-            from soundaudit.db.store import DBFile
+            from soundaudit.db.store import DBFile, DuplicateGroup
             with database.session() as s:
                 total = s.query(func.count(DBFile.id)).scalar() or 0
                 flac = (
@@ -146,12 +157,26 @@ class DashboardScreen(Screen[None]):
                     .scalar()
                     or 0
                 )
+                dup_groups = (
+                    s.query(func.count(DuplicateGroup.id)).scalar()
+                    or 0
+                )
+                dup_files = (
+                    s.query(func.count(DBFile.id))
+                    .filter(DBFile.duplicate_group_id.is_not(None))
+                    .scalar()
+                    or 0
+                )
             lines = [
                 f"[b]Database[/b]: {db_path.name}",
                 f"[b]Total[/b]   : {total:,}",
                 f"[b]FLAC[/b]    : {flac:,}  [b]MP3[/b]: {mp3:,}",
                 f"[b]Corrupt[/b] : { '[red]' + str(corrupt) + '[/red]' if corrupt else '0'}  [b]Missing[/b]: { '[yellow]' + str(no_tags) + '[/yellow]' if no_tags else '0'}",
             ]
+            if dup_groups:
+                lines.append(
+                    f"[b]Dups[/b]    : {dup_groups} groups, {dup_files} files"
+                )
             stats_widget.update("\n".join(lines))
             # highlight first nav item on stats load
             self.query_one(f"#{self._nav_sel()}", Static).add_class("focused-nav")
@@ -620,6 +645,24 @@ class ScanScreen(Screen[None]):
             log.write_line,
             f"Done. Saved {saved:,} file(s) — {saved - corrupt_count:,} valid, {corrupt_count:,} corrupt.",
         )
+
+        # Run duplicate analysis after scan
+        try:
+            app.call_from_thread(log.write_line, "Analyzing duplicates...")
+            groups = find_duplicate_groups(database)
+            if groups:
+                write_duplicate_groups(database, groups)
+                total_wasted = sum(r.wasted_bytes for r in groups)
+                app.call_from_thread(
+                    log.write_line,
+                    f"Found {len(groups)} duplicate groups ({sum(r.file_count for r in groups)} files). "
+                    f"Wasted: {_human_size(total_wasted)}.",
+                )
+            else:
+                app.call_from_thread(log.write_line, "No duplicates found.")
+        except Exception as exc:
+            app.call_from_thread(log.write_line, f"Duplicate analysis failed: {exc}")
+
         app.call_from_thread(self.post_message, self.ScanComplete(saved=saved))
 
     def _write_log_lines(self, lines: list[str]) -> None:
@@ -644,9 +687,10 @@ class ReportScreen(Screen[None]):
     BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("q", "quit", "Quit"),
         ("escape", "back", "Back"),
+        ("s", "export", "Export"),
     ]
 
-    TAB_IDS: ClassVar[list[str]] = ["tab-summary", "tab-missing", "tab-corrupt"]
+    TAB_IDS: ClassVar[list[str]] = ["tab-summary", "tab-missing", "tab-duplicates", "tab-corrupt"]
     _tab_index: reactive[int] = reactive(0)
 
     def compose(self) -> ComposeResult:
@@ -656,6 +700,7 @@ class ReportScreen(Screen[None]):
             with Horizontal(id="report-tabs"):
                 yield Static("Summary", id="tab-summary", classes="tab-link active-tab")
                 yield Static("Missing Tags", id="tab-missing", classes="tab-link")
+                yield Static("Duplicates", id="tab-duplicates", classes="tab-link")
                 yield Static("Corrupt", id="tab-corrupt", classes="tab-link")
             yield DataTable(id="report-table")
         yield Footer()
@@ -697,6 +742,9 @@ class ReportScreen(Screen[None]):
         elif tid == "tab-missing":
             self._activate_tab("tab-missing")
             self._load_missing_tags()
+        elif tid == "tab-duplicates":
+            self._activate_tab("tab-duplicates")
+            self._load_duplicates()
         elif tid == "tab-corrupt":
             self._activate_tab("tab-corrupt")
             self._load_corrupt()
@@ -711,6 +759,8 @@ class ReportScreen(Screen[None]):
                 self._load_summary()
             elif widget_id == "tab-missing":
                 self._load_missing_tags()
+            elif widget_id == "tab-duplicates":
+                self._load_duplicates()
             elif widget_id == "tab-corrupt":
                 self._load_corrupt()
 
@@ -819,6 +869,78 @@ class ReportScreen(Screen[None]):
         except Exception:
             table.add_row("Error", "Could not load database")
 
+    def _load_duplicates(self) -> None:
+        table = self.query_one("#report-table", DataTable)
+        table.clear(columns=True)
+        table.add_columns("Verdict", "File", "Album", "Tech", "Why")
+        app = self.app  # type: ignore[attr-defined]
+        try:
+            database = Database(app.get_db_path())
+            from soundaudit.db.store import DBFile, DuplicateGroup
+            with database.session() as s:
+                groups = s.query(DuplicateGroup).all()
+            if not groups:
+                table.add_row("—", "No duplicates found", "", "", "")
+                return
+
+            for db_group in groups:
+                with database.session() as s:
+                    files = (
+                        s.query(DBFile)
+                        .filter_by(duplicate_group_id=db_group.id)
+                        .order_by(DBFile.path)
+                        .all()
+                    )
+                if not files or len(files) < 2:
+                    continue
+
+                group_result = DuplicateGroupResult(
+                    content_hash=db_group.acoustid or "",
+                    file_count=len(files),
+                    total_size_bytes=sum(f.size_bytes for f in files),
+                    files=files,
+                    group_id=db_group.id,
+                )
+                verdict = analyze_keepers(group_result)
+
+                # Group header
+                header_style = "bold cyan"
+                table.add_row(
+                    Text(f"Grp {db_group.id}", style=header_style),
+                    Text(f"{len(files)} files", style=header_style),
+                    Text("", style=header_style),
+                    Text(_human_size(verdict.wasted_bytes), style=header_style),
+                    Text("wasted", style="yellow"),
+                )
+
+                for fv in verdict.file_verdicts:
+                    f = fv.db_file
+                    row_style = {
+                        KeeperVerdict.KEEP: "green",
+                        KeeperVerdict.DELETE: "red",
+                        KeeperVerdict.REVIEW: "yellow",
+                    }[fv.verdict]
+
+                    path = str(Path(f.path).name) if len(files) > 3 else str(Path(f.path))
+                    table.add_row(
+                        Text(fv.verdict.value, style=f"bold {row_style}"),
+                        path,
+                        f.album or ("Single" if "single" in f.path.lower().split(os.sep) else "—"),
+                        fv.tech_summary,
+                        ", ".join(fv.reasons[:3]),
+                        label=None,
+                        style=row_style,
+                    )
+        except Exception:
+            table.add_row("Error", "Could not load duplicates", "", "", "")
+
+    def _human_size(self, size_bytes: int) -> str:
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if abs(size_bytes) < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} PB"
+
     @staticmethod
     def _shorten_paths(paths: list[str]) -> list[str]:
         """Strip the longest common directory prefix from a list of paths."""
@@ -831,6 +953,141 @@ class ReportScreen(Screen[None]):
         if sep > 0:
             prefix = prefix[: sep + 1]
         return [p[len(prefix) :] if p.startswith(prefix) else p for p in paths]
+
+    def action_export(self) -> None:
+        tab = self.TAB_IDS[self._tab_index]
+        default_name = f"soundaudit_{tab.removeprefix('tab-')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        self.app.push_screen(
+            ExportDialog(default_name),
+            lambda path: self._do_export(path, tab),
+        )
+
+    def _do_export(self, path: Path | None, tab: str) -> None:
+        if path is None:
+            return
+        app = self.app  # type: ignore[attr-defined]
+        db_path = app.get_db_path()
+        try:
+            from soundaudit.reporter import ReportExporter, infer_format
+            from soundaudit.db.store import Database
+            db = Database(db_path)
+            fmt = infer_format(path)
+            exporter = ReportExporter(path)
+
+            if tab == "tab-summary":
+                self._export_summary(db, exporter, fmt)
+            elif tab == "tab-missing":
+                self._export_missing_tags(db, exporter, fmt)
+            elif tab == "tab-duplicates":
+                self._export_duplicates(db, exporter, fmt)
+            elif tab == "tab-corrupt":
+                self._export_corrupt(db, exporter, fmt)
+
+            self.notify(f"Saved to {path.name}", severity="information", timeout=4)
+        except Exception as exc:
+            self.notify(f"Export failed: {exc}", severity="error", timeout=5)
+
+    def _export_summary(self, db: Database, exporter, fmt: str) -> None:
+        from sqlalchemy import func
+        from soundaudit.db.store import DBFile, DuplicateGroup
+        with db.session() as s:
+            total = s.query(func.count(DBFile.id)).scalar() or 0
+            flac = s.query(func.count(DBFile.id)).filter(DBFile.format == "flac").scalar() or 0
+            mp3 = s.query(func.count(DBFile.id)).filter(DBFile.format == "mp3").scalar() or 0
+            corrupt = s.query(func.count(DBFile.id)).filter(DBFile.is_corrupt == 1).scalar() or 0
+            no_tags = s.query(func.count(DBFile.id)).filter(DBFile.title.is_(None)).scalar() or 0
+            dup_groups = s.query(func.count(DuplicateGroup.id)).scalar() or 0
+        if fmt == "json":
+            exporter.write_json({"report_type": "summary", "metrics": {
+                "total": total, "flac": flac, "mp3": mp3, "corrupt": corrupt,
+                "missing_title": no_tags, "duplicate_groups": dup_groups,
+            }})
+        elif fmt == "csv":
+            exporter.write_csv([{"metric": k, "value": v} for k, v in {
+                "total": total, "flac": flac, "mp3": mp3, "corrupt": corrupt,
+                "missing_title": no_tags, "duplicate_groups": dup_groups,
+            }.items()])
+        else:
+            from soundaudit.reporter import MarkdownSection
+            rows = [[k, str(v)] for k, v in {
+                "Total files": total, "FLAC": flac, "MP3": mp3,
+                "Corrupt": corrupt, "Missing title": no_tags,
+                "Duplicate groups": dup_groups,
+            }.items()]
+            exporter.write_markdown("Library Summary", [MarkdownSection("Summary", ["Metric", "Count"], rows)])
+
+    def _export_missing_tags(self, db: Database, exporter, fmt: str) -> None:
+        from soundaudit.db.store import DBFile
+        from soundaudit.reporter import MarkdownSection
+        with db.session() as s:
+            files = s.query(DBFile).filter(
+                (DBFile.title.is_(None)) | (DBFile.artist.is_(None)) | (DBFile.album.is_(None))
+            ).all()
+        rows = [{"file": f.path, "missing": ", ".join(
+            t for t, cond in [("title", not f.title), ("artist", not f.artist), ("album", not f.album)] if cond
+        )} for f in files]
+        if fmt == "json":
+            exporter.write_json({"report_type": "missing_tags", "files": rows})
+        elif fmt == "csv":
+            exporter.write_csv(rows)
+        else:
+            md_rows = [[r["file"], r["missing"]] for r in rows] if rows else []
+            exporter.write_markdown("Missing Tags", [MarkdownSection("Files with Missing Tags", ["File", "Missing"], md_rows)])
+
+    def _export_duplicates(self, db: Database, exporter, fmt: str) -> None:
+        from soundaudit.db.store import DBFile, DuplicateGroup
+        from soundaudit.reporter import MarkdownSection
+        from soundaudit.analyzer.duplicates import DuplicateGroupResult, analyze_keepers
+        with db.session() as s:
+            groups = s.query(DuplicateGroup).all()
+        group_data = []
+        csv_rows = []
+        md_sections = []
+        for g in groups:
+            with db.session() as s:
+                files = s.query(DBFile).filter_by(duplicate_group_id=g.id).all()
+            if len(files) < 2:
+                continue
+            result = DuplicateGroupResult(
+                content_hash=g.acoustid or "", file_count=len(files),
+                total_size_bytes=sum(f.size_bytes for f in files), files=files, group_id=g.id,
+            )
+            verdict = analyze_keepers(result)
+            file_entries = []
+            md_rows = []
+            for fv in verdict.file_verdicts:
+                f = fv.db_file
+                entry = {
+                    "path": f.path, "verdict": fv.verdict.value, "score": round(fv.score, 1),
+                    "reasons": fv.reasons, "album": f.album or "", "format": f.format or "",
+                    "bit_depth": f.bit_depth, "sample_rate_hz": f.sample_rate_hz,
+                    "size_bytes": f.size_bytes, "lossless": bool(f.lossless),
+                }
+                file_entries.append(entry)
+                csv_rows.append({"group_id": g.id, **entry})
+                md_rows.append([fv.verdict.value, str(Path(f.path).name), f.album or "—", fv.tech_summary, ", ".join(fv.reasons[:3])])
+            group_data.append({"group_id": g.id, "content_hash": g.acoustid or "", "total_files": len(files), "wasted_bytes": verdict.wasted_bytes, "files": file_entries})
+            md_sections.append(MarkdownSection(f"Group {g.id} — {_human_size(verdict.wasted_bytes)} wasted", ["Verdict", "File", "Album", "Tech", "Why"], md_rows, f"Content hash: `{g.acoustid or 'n/a'}` | {len(files)} files"))
+        if fmt == "json":
+            exporter.write_json({"report_type": "duplicates", "groups": group_data})
+        elif fmt == "csv":
+            exporter.write_csv(csv_rows)
+        else:
+            exporter.write_markdown("Duplicate Groups", md_sections)
+
+    def _export_corrupt(self, db: Database, exporter, fmt: str) -> None:
+        from soundaudit.db.store import DBFile
+        from soundaudit.reporter import MarkdownSection
+        with db.session() as s:
+            files = s.query(DBFile).filter(DBFile.is_corrupt == 1).all()
+        rows = [{"file": f.path, "reason": f.corruption_reason or "unknown"} for f in files]
+        if fmt == "json":
+            exporter.write_json({"report_type": "corrupt", "files": rows})
+        elif fmt == "csv":
+            exporter.write_csv(rows)
+        else:
+            md_rows = [[r["file"], r["reason"]] for r in rows] if rows else []
+            exporter.write_markdown("Corrupt Files", [MarkdownSection("Corrupt / Unreadable Files", ["File", "Reason"], md_rows)])
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -905,3 +1162,136 @@ class ResetConfirmScreen(ModalScreen[bool]):
             self.dismiss(True)
         else:
             self.dismiss(False)
+
+
+class ExportDialog(ModalScreen[Path | None]):
+    """Modal dialog to choose export filename and format."""
+
+    DEFAULT_CSS = """
+    #export-dialog {
+        width: auto;
+        min-width: 50;
+        max-width: 90vw;
+        height: auto;
+        border: solid $primary;
+        padding: 0 1;
+        background: $surface;
+    }
+    #export-title {
+        text-align: center;
+        padding-bottom: 0;
+        height: auto;
+    }
+    #export-hint {
+        text-align: center;
+        height: auto;
+        color: $text-muted;
+    }
+    #export-input {
+        margin: 0 0;
+    }
+    #export-actions {
+        align: center middle;
+        height: auto;
+        padding: 0 0;
+    }
+    #export-actions Static {
+        width: auto;
+        min-width: 10;
+        text-align: center;
+        padding: 0 1;
+    }
+    """
+
+    FORMAT_SHORTCUTS: ClassVar[list[str]] = ["JSON", "CSV", "Markdown"]
+
+    def __init__(self, default_name: str) -> None:
+        self._default_name = default_name
+        self._shortcut_idx = 0
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Static("[b]Export Report[/b]", id="export-title"),
+            Static("Type filename (.json, .csv, .md) or pick a format", id="export-hint"),
+            Input(value=self._default_name, id="export-input"),
+            Horizontal(
+                Static("▸ JSON", id="fmt-json", classes="nav-item"),
+                Static("▸ CSV", id="fmt-csv", classes="nav-item"),
+                Static("▸ Markdown", id="fmt-md", classes="nav-item"),
+                Static("▸ Save", id="btn-save", classes="nav-item"),
+                Static("▸ Cancel", id="btn-cancel", classes="nav-item"),
+                id="export-actions",
+            ),
+            id="export-dialog",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#export-input", Input).focus()
+        self._focus_shortcut(True)
+
+    def _shortcut_ids(self) -> list[str]:
+        return ["fmt-json", "fmt-csv", "fmt-md", "btn-save", "btn-cancel"]
+
+    def _focus_shortcut(self, first: bool = False) -> None:
+        for sid in self._shortcut_ids():
+            self.query_one(f"#{sid}", Static).remove_class("focused-nav")
+        sid = self._shortcut_ids()[self._shortcut_idx]
+        node = self.query_one(f"#{sid}", Static)
+        node.add_class("focused-nav")
+        if not first:
+            node.focus()
+
+    def _apply_shortcut(self) -> None:
+        sid = self._shortcut_ids()[self._shortcut_idx]
+        inp = self.query_one("#export-input", Input)
+        if sid == "fmt-json":
+            inp.value = self._replace_ext(inp.value, ".json")
+        elif sid == "fmt-csv":
+            inp.value = self._replace_ext(inp.value, ".csv")
+        elif sid == "fmt-md":
+            inp.value = self._replace_ext(inp.value, ".md")
+        elif sid == "btn-save":
+            self._do_save()
+        elif sid == "btn-cancel":
+            self.dismiss(None)
+
+    @staticmethod
+    def _replace_ext(name: str, ext: str) -> str:
+        p = Path(name)
+        return str(p.with_suffix(ext))
+
+    def _do_save(self) -> None:
+        name = self.query_one("#export-input", Input).value.strip()
+        if not name:
+            self.notify("Filename cannot be empty", severity="error", timeout=3)
+            return
+        path = Path(name)
+        if path.exists():
+            self.notify(f"{path.name} already exists", severity="warning", timeout=3)
+            return
+        self.dismiss(path)
+
+    def on_key(self, event) -> None:
+        key = event.key
+        if key in ("left", "up", "h", "k"):
+            self._shortcut_idx = max(0, self._shortcut_idx - 1)
+            self._focus_shortcut()
+            event.stop()
+        elif key in ("right", "down", "l", "j"):
+            self._shortcut_idx = min(len(self._shortcut_ids()) - 1, self._shortcut_idx + 1)
+            self._focus_shortcut()
+            event.stop()
+        elif key in ("enter",):
+            self._apply_shortcut()
+            event.stop()
+        elif key in ("escape", "q"):
+            self.dismiss(None)
+            event.stop()
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id in self._shortcut_ids():
+            self._shortcut_idx = self._shortcut_ids().index(widget_id)
+            self._apply_shortcut()
+            event.stop()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -11,9 +12,16 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from soundaudit._version import __version__
+from soundaudit.analyzer.duplicates import (
+    DuplicateAnalyzer,
+    DuplicateGroupResult,
+    KeeperVerdict,
+    analyze_keepers,
+)
 from soundaudit.config import AppConfig
 from soundaudit.db.store import Database
 from soundaudit.models import HashStrategy
+from soundaudit.reporter import ReportExporter, infer_format, MarkdownSection
 from soundaudit.scanner.walker import scan_directory
 from soundaudit.tui import SoundAuditApp
 
@@ -44,6 +52,7 @@ def scan_cmd(
         help="Content hash strategy: head-only (default), head-tail, full, none",
     ),
     fingerprint: bool = typer.Option(False, "--fingerprint", help="Compute AcoustID fingerprints"),
+    analyze_duplicates: bool = typer.Option(True, "--analyze-duplicates/--skip-analyze", help="Run duplicate analysis after scan"),
 ) -> None:
     """Scan audio files and store metadata in the database."""
     cfg = _load_config(config)
@@ -93,6 +102,9 @@ def scan_cmd(
 
     console.print(f"\n[bold]Done.[/bold] {total_new} files scanned. Database: {cfg.database.path}")
 
+    if analyze_duplicates:
+        DuplicateAnalyzer(database, console=console).run()
+
 
 @app.command("report")
 def report_cmd(
@@ -101,6 +113,8 @@ def report_cmd(
     missing_tags: bool = typer.Option(False, "--missing-tags", help="Show files with incomplete tags"),
     duplicates: bool = typer.Option(False, "--duplicates", help="Show duplicate groups"),
     corrupt: bool = typer.Option(False, "--corrupt", help="Show corrupt/unreadable files"),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Write report to file (infer format from extension: .json, .csv, .md, .txt)"),
+    fmt: str | None = typer.Option(None, "--format", help="Override format: json, csv, markdown"),
 ) -> None:
     """Generate reports from the scan database."""
     cfg = _load_config(config)
@@ -108,20 +122,26 @@ def report_cmd(
         cfg.database.path = str(db)
 
     database = Database(str(cfg.database.resolved()))
+    out_path = output
+    out_format = fmt or (infer_format(out_path) if out_path else "console")
 
     if missing_tags:
-        _report_missing_tags(database)
+        _report_missing_tags(database, out_path, out_format)
     elif duplicates:
-        console.print("[yellow]Duplicate detection not yet implemented — run with --fingerprint during scan.[/yellow]")
+        _report_duplicates(database, out_path, out_format)
     elif corrupt:
-        _report_corrupt(database)
+        _report_corrupt(database, out_path, out_format)
     else:
-        _report_summary(database)
+        _report_summary(database, out_path, out_format)
 
 
-def _report_summary(database: Database) -> None:
+def _report_summary(
+    database: Database,
+    out_path: Path | None = None,
+    out_format: str = "console",
+) -> None:
     from sqlalchemy import func
-    from soundaudit.db.store import DBFile
+    from soundaudit.db.store import DBFile, DuplicateGroup
 
     with database.session() as s:
         total = s.query(func.count(DBFile.id)).scalar() or 0
@@ -131,6 +151,56 @@ def _report_summary(database: Database) -> None:
         no_tags = s.query(func.count(DBFile.id)).filter(DBFile.title.is_(None)).scalar() or 0
         no_artist = s.query(func.count(DBFile.id)).filter(DBFile.artist.is_(None)).scalar() or 0
         no_album = s.query(func.count(DBFile.id)).filter(DBFile.album.is_(None)).scalar() or 0
+        dup_groups = s.query(func.count(DuplicateGroup.id)).scalar() or 0
+        dup_files = (
+            s.query(func.count(DBFile.id))
+            .filter(DBFile.duplicate_group_id.is_not(None))
+            .scalar()
+            or 0
+        )
+
+    if out_path:
+        data = {
+            "report_type": "summary",
+            "generated": datetime.now().isoformat(),
+            "metrics": {
+                "total_files": total,
+                "flac": flac,
+                "mp3": mp3,
+                "corrupt": corrupt,
+                "missing_title": no_tags,
+                "missing_artist": no_artist,
+                "missing_album": no_album,
+                "duplicate_groups": dup_groups,
+                "duplicate_files": dup_files,
+            },
+        }
+        exporter = ReportExporter(out_path)
+        if out_format == "json":
+            exporter.write_json(data)
+        elif out_format == "csv":
+            exporter.write_csv([data["metrics"]])
+        else:
+            sections = [
+                MarkdownSection(
+                    heading="Library Summary",
+                    headers=["Metric", "Count"],
+                    rows=[
+                        ["Total files", str(total)],
+                        ["FLAC", str(flac)],
+                        ["MP3", str(mp3)],
+                        ["Corrupt", str(corrupt)],
+                        ["Missing title", str(no_tags)],
+                        ["Missing artist", str(no_artist)],
+                        ["Missing album", str(no_album)],
+                        ["Duplicate groups", str(dup_groups)],
+                        ["Duplicate files", str(dup_files)],
+                    ],
+                )
+            ]
+            exporter.write_markdown("SoundAudit Report", sections)
+        console.print(f"[green]Saved to {out_path}[/green]")
+        return
 
     table = Table(title="SoundAudit Library Summary", show_header=True, header_style="bold magenta")
     table.add_column("Metric", style="cyan")
@@ -148,7 +218,11 @@ def _report_summary(database: Database) -> None:
     console.print("\n[dim]Run with --missing-tags, --duplicates, or --corrupt for details.[/dim]")
 
 
-def _report_missing_tags(database: Database) -> None:
+def _report_missing_tags(
+    database: Database,
+    out_path: Path | None = None,
+    out_format: str = "console",
+) -> None:
     from soundaudit.db.store import DBFile
 
     with database.session() as s:
@@ -160,7 +234,44 @@ def _report_missing_tags(database: Database) -> None:
         )
 
     if not files:
-        console.print("[green]No files with missing tags found.[/green]")
+        if out_path:
+            exporter = ReportExporter(out_path)
+            if out_format == "json":
+                exporter.write_json({"report_type": "missing_tags", "files": []})
+            elif out_format == "csv":
+                exporter.write_csv([])
+            else:
+                exporter.write_markdown("Missing Tags", [MarkdownSection("Missing Tags", ["File", "Missing"], [], "No files with missing tags.")])
+            console.print(f"[green]Saved to {out_path}[/green]")
+        else:
+            console.print("[green]No files with missing tags found.[/green]")
+        return
+
+    if out_path:
+        rows = []
+        for f in files:
+            missing = []
+            if not f.title:
+                missing.append("title")
+            if not f.artist:
+                missing.append("artist")
+            if not f.album:
+                missing.append("album")
+            if not f.track_number:
+                missing.append("track#")
+            rows.append({"file": f.path, "missing": ", ".join(missing)})
+        exporter = ReportExporter(out_path)
+        if out_format == "json":
+            exporter.write_json({"report_type": "missing_tags", "files": rows})
+        elif out_format == "csv":
+            exporter.write_csv(rows)
+        else:
+            md_rows = [[r["file"], r["missing"]] for r in rows]
+            exporter.write_markdown(
+                "Missing Tags",
+                [MarkdownSection("Files with Missing Tags", ["File", "Missing"], md_rows)],
+            )
+        console.print(f"[green]Saved to {out_path}[/green]")
         return
 
     table = Table(title="Files with Missing Tags", show_header=True)
@@ -183,14 +294,44 @@ def _report_missing_tags(database: Database) -> None:
     console.print(f"\nShowing first {len(files)} of [yellow]...[/yellow] total.")
 
 
-def _report_corrupt(database: Database) -> None:
+def _report_corrupt(
+    database: Database,
+    out_path: Path | None = None,
+    out_format: str = "console",
+) -> None:
     from soundaudit.db.store import DBFile
 
     with database.session() as s:
         files = s.query(DBFile).filter(DBFile.is_corrupt == 1).all()
 
     if not files:
-        console.print("[green]No corrupt files found.[/green]")
+        if out_path:
+            exporter = ReportExporter(out_path)
+            if out_format == "json":
+                exporter.write_json({"report_type": "corrupt", "files": []})
+            elif out_format == "csv":
+                exporter.write_csv([])
+            else:
+                exporter.write_markdown("Corrupt Files", [MarkdownSection("Corrupt Files", ["File", "Reason"], [], "No corrupt files found.")])
+            console.print(f"[green]Saved to {out_path}[/green]")
+        else:
+            console.print("[green]No corrupt files found.[/green]")
+        return
+
+    if out_path:
+        rows = [{"file": f.path, "reason": f.corruption_reason or "unknown"} for f in files]
+        exporter = ReportExporter(out_path)
+        if out_format == "json":
+            exporter.write_json({"report_type": "corrupt", "files": rows})
+        elif out_format == "csv":
+            exporter.write_csv(rows)
+        else:
+            md_rows = [[r["file"], r["reason"]] for r in rows]
+            exporter.write_markdown(
+                "Corrupt Files",
+                [MarkdownSection("Corrupt / Unreadable Files", ["File", "Reason"], md_rows)],
+            )
+        console.print(f"[green]Saved to {out_path}[/green]")
         return
 
     table = Table(title="Corrupt / Unreadable Files", show_header=True)
@@ -220,6 +361,226 @@ def tui_cmd(
 def version_cmd() -> None:
     """Print version and exit."""
     console.print(f"SoundAudit [bold cyan]{__version__}[/bold cyan]")
+
+
+@app.command("analyze")
+def analyze_cmd(
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    db: Path | None = typer.Option(None, "--db"),
+    duplicates: bool = typer.Option(True, "--duplicates/--no-duplicates", help="Run duplicate detection"),
+) -> None:
+    """Run analysis passes on the scanned database."""
+    cfg = _load_config(config)
+    if db:
+        cfg.database.path = str(db)
+
+    database = Database(str(cfg.database.resolved()))
+
+    if duplicates:
+        DuplicateAnalyzer(database, console=console).run()
+
+
+def _report_duplicates(
+    database: Database,
+    out_path: Path | None = None,
+    out_format: str = "console",
+) -> None:
+    from soundaudit.db.store import DBFile, DuplicateGroup
+
+    with database.session() as s:
+        groups = s.query(DuplicateGroup).all()
+
+    if not groups:
+        if out_path:
+            exporter = ReportExporter(out_path)
+            if out_format == "json":
+                exporter.write_json({"report_type": "duplicates", "groups": []})
+            elif out_format == "csv":
+                exporter.write_csv([])
+            else:
+                exporter.write_markdown(
+                    "Duplicates",
+                    [MarkdownSection("Duplicate Groups", ["Group", "File", "Verdict", "Tech", "Why"], [], "No duplicates found.")],
+                )
+            console.print(f"[green]Saved to {out_path}[/green]")
+        else:
+            console.print("[green]No duplicate groups found.[/green]")
+        return
+
+    total_wasted = 0
+    total_groups = 0
+    group_data: list[dict] = []
+    csv_rows: list[dict] = []
+    md_sections: list[MarkdownSection] = []
+
+    for db_group in groups:
+        with database.session() as s:
+            files = (
+                s.query(DBFile)
+                .filter_by(duplicate_group_id=db_group.id)
+                .order_by(DBFile.path)
+                .all()
+            )
+        if not files or len(files) < 2:
+            continue
+
+        total_groups += 1
+        group_result = DuplicateGroupResult(
+            content_hash=db_group.acoustid or "",
+            file_count=len(files),
+            total_size_bytes=sum(f.size_bytes for f in files),
+            files=files,
+            group_id=db_group.id,
+        )
+        verdict = analyze_keepers(group_result)
+        total_wasted += verdict.wasted_bytes
+
+        file_entries = []
+        md_rows: list[list[str]] = []
+        for fv in verdict.file_verdicts:
+            f = fv.db_file
+            entry = {
+                "path": f.path,
+                "verdict": fv.verdict.value,
+                "score": round(fv.score, 1),
+                "reasons": fv.reasons,
+                "album": f.album or "",
+                "format": f.format or "",
+                "bit_depth": f.bit_depth,
+                "sample_rate_hz": f.sample_rate_hz,
+                "size_bytes": f.size_bytes,
+                "lossless": bool(f.lossless),
+            }
+            file_entries.append(entry)
+            csv_rows.append({
+                "group_id": db_group.id,
+                **entry,
+            })
+            md_rows.append([
+                fv.verdict.value,
+                str(Path(f.path).name),
+                f.album or "—",
+                fv.tech_summary,
+                ", ".join(fv.reasons[:3]),
+            ])
+
+        group_data.append({
+            "group_id": db_group.id,
+            "content_hash": db_group.acoustid or "",
+            "total_files": len(files),
+            "wasted_bytes": verdict.wasted_bytes,
+            "files": file_entries,
+        })
+
+        md_sections.append(
+            MarkdownSection(
+                heading=f"Group {db_group.id} — {_human_size(verdict.wasted_bytes)} wasted",
+                headers=["Verdict", "File", "Album", "Tech", "Why"],
+                rows=md_rows,
+                paragraph=f"Content hash: `{db_group.acoustid or 'n/a'}`  |  {len(files)} files",
+            )
+        )
+
+    if out_path:
+        exporter = ReportExporter(out_path)
+        if out_format == "json":
+            exporter.write_json({
+                "report_type": "duplicates",
+                "total_groups": total_groups,
+                "total_wasted_bytes": total_wasted,
+                "groups": group_data,
+            })
+        elif out_format == "csv":
+            exporter.write_csv(csv_rows)
+        else:
+            md_sections.append(
+                MarkdownSection(
+                    heading="Summary",
+                    headers=["Metric", "Value"],
+                    rows=[
+                        ["Total groups", str(total_groups)],
+                        ["Total wasted", _human_size(total_wasted)],
+                    ],
+                )
+            )
+            exporter.write_markdown("Duplicate Groups — Smart Keeper Recommendations", md_sections)
+        console.print(f"[green]Saved to {out_path}[/green]")
+        return
+
+    from rich.table import Table
+    table = Table(title="Duplicate Groups — Smart Keeper Recommendations", show_header=True)
+    table.add_column("Verdict", justify="center", width=8)
+    table.add_column("File", style="dim", max_width=50)
+    table.add_column("Album", max_width=20)
+    table.add_column("Tech", width=16)
+    table.add_column("Why", max_width=30)
+
+    for db_group in groups:
+        with database.session() as s:
+            files = (
+                s.query(DBFile)
+                .filter_by(duplicate_group_id=db_group.id)
+                .order_by(DBFile.path)
+                .all()
+            )
+        if not files or len(files) < 2:
+            continue
+
+        group_result = DuplicateGroupResult(
+            content_hash=db_group.acoustid or "",
+            file_count=len(files),
+            total_size_bytes=sum(f.size_bytes for f in files),
+            files=files,
+            group_id=db_group.id,
+        )
+        verdict = analyze_keepers(group_result)
+
+        table.add_row(
+            f"[bold cyan]Group {db_group.id}[/bold cyan]",
+            f"[bold]{len(files)} files[/bold]",
+            "",
+            _human_size(verdict.wasted_bytes),
+            f"[yellow]wasted[/yellow]",
+            end_section=True,
+        )
+
+        for fv in verdict.file_verdicts:
+            f = fv.db_file
+            style = {
+                KeeperVerdict.KEEP: "[bold green]",
+                KeeperVerdict.DELETE: "[red]",
+                KeeperVerdict.REVIEW: "[yellow]",
+            }[fv.verdict]
+            reset = "[/]"
+
+            path = str(Path(f.path).name) if len(files) > 3 else str(Path(f.path))
+            album = fv.album_context
+            tech = fv.tech_summary
+            why = ", ".join(fv.reasons[:3])
+
+            table.add_row(
+                f"{style}{fv.verdict.value}{reset}",
+                path,
+                album,
+                tech,
+                why,
+            )
+
+        table.add_row("", "", "", "", "", end_section=True)
+
+    console.print(table)
+    console.print(
+        f"\n[bold]{total_groups} groups[/bold] — "
+        f"Total wasted space: [bold red]{_human_size(total_wasted)}[/bold red]"
+    )
+
+
+def _human_size(size_bytes: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(size_bytes) < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} PB"
 
 
 def main() -> None:

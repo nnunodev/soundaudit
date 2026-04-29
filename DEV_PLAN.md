@@ -42,7 +42,25 @@ soundaudit report --corrupt
 
 ## Next
 
-### Phase 1 — Fingerprinting + Duplicates (High value, medium effort)
+### Phase 1 — Content-Hash Duplicates ✅ (Done)
+- [x] Group files by content_hash in DB, flag `is_duplicate` + `duplicate_group_id`
+- [x] CLI: `soundaudit analyze --duplicates`
+- [x] CLI: `soundaudit scan --analyze-duplicates` (default on, `--skip-analyze` to disable)
+- [x] Report: `soundaudit report --duplicates` with wasted space calculation
+- [x] Smart keeper recommendations — scores by: lossless > album > bit depth > sample rate > size > tags
+- [x] Per-file verdict: KEEP / DELETE / REVIEW with reasons
+- [x] TUI: Duplicates tab with color-coded rows (green=keep, red=delete, yellow=review)
+- [x] TUI: Dashboard shows dup group count when present
+- [x] TUI: Auto-analyze after scan
+- [x] **Export reports to JSON / CSV / Markdown via `--output` / `-o`**
+  - JSON: nested groups with full file metadata and verdicts
+  - CSV: flat rows, one per file, group_id repeated
+  - Markdown: human-readable tables per group with summary
+- [x] **TUI Export dialog (press `s`)** — filename input + JSON/CSV/Markdown shortcuts
+  - Generates `soundaudit_{tab}_{YYYYMMDD_HHMMSS}.{ext}` default name
+  - Exports the currently active tab's data
+
+### Phase 1b — AcoustID Fingerprinting + Fuzzy Duplicates (Next)
 - [ ] AcoustID fingerprint via `fpcalc` / `chromaprint` FFI
 - [ ] Store `acoustid` in `AudioSignature` table
 - [ ] Duplicate analyzer: group by acoustid, flag bit-for-bit vs transcode dups
@@ -66,11 +84,10 @@ soundaudit report --corrupt
 - [ ] Backup original tags before write (store in DB as JSON)
 - [ ] CLI: `soundaudit fix --fields artist,album,year`
 
-### Phase 5 — Reporting + Export (Low effort, nice to have)
-- [ ] HTML report with charts (missing tags pie chart, duplicates table, etc.)
-- [ ] JSON export for CI / external tools
-- [ ] CSV export for spreadsheet warriors
-- [ ] CLI: `soundaudit export --format html|json|csv`
+### Phase 5 — Reporting + Export (Now part of Phase 1)
+- [x] JSON / CSV / Markdown export via `--output` / `-o`
+- [ ] HTML report with charts
+- [ ] Dedicated `export` command for full-library dumps
 
 ---
 
