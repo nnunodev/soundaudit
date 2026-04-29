@@ -13,7 +13,6 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
-    Checkbox,
     DataTable,
     Footer,
     Header,
@@ -252,17 +251,42 @@ class ScanScreen(Screen[None]):
     def on_mount(self) -> None:
         app = self.app  # type: ignore[attr-defined]
         cfg = app.get_config()
+        full_paths = [str(p) for p in cfg.scan.paths]
+        short_paths = ReportScreen._shorten_paths(full_paths)
+        self._path_map: dict[str, tuple[str, str]] = {}
+        self._path_selected: dict[str, bool] = {}
         path_list = self.query_one("#path-list", Vertical)
-        for p in cfg.scan.paths:
+        for idx, (full, short) in enumerate(zip(full_paths, short_paths)):
+            pid = f"path-{idx}"
+            self._path_map[pid] = (full, short)
+            self._path_selected[pid] = True
             path_list.mount(
-                Checkbox(str(p), value=True, classes="path-checkbox")
+                Static(
+                    f"[x] {short}",
+                    id=pid,
+                    classes="path-item",
+                )
             )
-        checkboxes = list(self.query(".path-checkbox"))
-        if checkboxes:
-            checkboxes[0].focus()
+        items = list(self.query(".path-item"))
+        if items:
+            items[0].focus()
         log = self.query_one("#scan-log", Log)
-        log.write_line("Ready. Select paths and click Start.")
+        log.write_line("Ready. Toggle paths with click or Enter.")
         self._update_progress_totals()
+
+    def _toggle_path(self, pid: str) -> None:
+        full, short = self._path_map[pid]
+        was = self._path_selected[pid]
+        self._path_selected[pid] = not was
+        mark = "[x]" if self._path_selected[pid] else "[ ]"
+        self.query_one(f"#{pid}", Static).update(f"{mark} {short}")
+
+    def on_key(self, event) -> None:
+        fid = getattr(self.focused, "id", None)
+        if event.key in ("enter", "space"):
+            if fid and fid.startswith("path-"):
+                self._toggle_path(fid)
+                event.stop()
 
     def watch_files_found(self, value: int) -> None:
         self.query_one("#stat-found", Static).update(f"Found {value:,}")
@@ -309,6 +333,9 @@ class ScanScreen(Screen[None]):
         elif widget_id == "btn-back":
             if not self.is_scanning:
                 self.app.pop_screen()
+        elif widget_id and widget_id.startswith("path-"):
+            self._toggle_path(widget_id)
+            event.stop()
 
     def action_cancel(self) -> None:
         if self.is_scanning:
@@ -321,14 +348,14 @@ class ScanScreen(Screen[None]):
         self.app.exit()
 
     def _start_scan(self) -> None:
-        # Collect selected paths
-        selected: list[str] = []
-        for cb in self.query(".path-checkbox"):
-            if isinstance(cb, Checkbox) and cb.value:
-                selected.append(str(cb.label))
+        selected = [
+            self._path_map[pid][0]
+            for pid, sel in self._path_selected.items()
+            if sel
+        ]
         if not selected:
             self.query_one("#scan-log", Log).write_line(
-                "No paths selected. Check at least one."
+                "No paths selected. Toggle at least one."
             )
             return
         self._selected_paths = selected

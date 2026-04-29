@@ -118,7 +118,6 @@ class SoundAuditApp(App[None]):
         overflow-y: auto;
         padding: 0 1;
         margin: 0 0;
-        border: solid $surface-lighten-1;
     }
 
     #path-label {
@@ -127,10 +126,14 @@ class SoundAuditApp(App[None]):
         text-align: center;
     }
 
-    .path-checkbox {
-        padding: 0 1;
-        margin: 0;
+    .path-item {
         height: auto;
+        padding: 0 1;
+        text-style: none;
+        color: $text;
+    }
+    .path-item:hover {
+        background: $surface-lighten-1;
     }
 
     #stats-row {
