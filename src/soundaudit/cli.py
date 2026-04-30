@@ -12,6 +12,12 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from soundaudit._version import __version__
+from soundaudit.actuator.tags import (
+    TagWriteError,
+    resolved_metadata_to_tags,
+    snapshot_tags,
+    write_tags,
+)
 from soundaudit.analyzer.transcode import analyze_library_transcodes
 from soundaudit.analyzer.acoustid import (
     AcoustidDuplicateAnalyzer,
@@ -27,7 +33,7 @@ from soundaudit.analyzer.duplicates import (
 )
 from soundaudit.config import AppConfig
 from soundaudit.db.store import AcoustidGroup, Database
-from soundaudit.models import HashStrategy
+from soundaudit.models import HashStrategy, TrackTags
 from soundaudit.reporter import ReportExporter, infer_format, MarkdownSection
 from soundaudit.scanner.walker import scan_directory
 from soundaudit.tui import SoundAuditApp
@@ -454,6 +460,224 @@ def analyze_cmd(
         AcoustidDuplicateAnalyzer(database, console=console).run()
     if transcodes:
         analyze_library_transcodes(database, workers=workers, console=console)
+
+
+@app.command("resolve")
+def resolve_cmd(
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    db: Path | None = typer.Option(None, "--db"),
+    auto_write: bool = typer.Option(
+        False,
+        "--auto-write",
+        help="Write resolved tags back to files immediately after resolving",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Preview only, do not modify database or files",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Re-resolve files that already have MusicBrainz data",
+    ),
+    workers: int = typer.Option(
+        1, "--workers", "-j", help="Parallel workers", min=1, max=4
+    ),
+) -> None:
+    """Resolve canonical metadata from MusicBrainz for unscanned files."""
+    cfg = _load_config(config)
+    if db:
+        cfg.database.path = str(db)
+
+    database = Database(str(cfg.database.resolved()))
+    from soundaudit.resolver.musicbrainz import MusicBrainzResolver
+
+    resolver = MusicBrainzResolver(
+        database,
+        cfg.resolvers,
+        cfg.fingerprinting,
+        console=console,
+    )
+    results = resolver.resolve_library(dry_run=dry_run, force=force, workers=workers)
+
+    if auto_write and not dry_run and results:
+        _auto_write_tags(database, results, fields=None, backup=cfg.actuator.backup_before_write)
+    elif auto_write and dry_run:
+        console.print("[yellow]--auto-write skipped because --dry-run is active.[/yellow]")
+
+
+@app.command("fix")
+def fix_cmd(
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    db: Path | None = typer.Option(None, "--db"),
+    fields: str = typer.Option(
+        "artist,album,title,year",
+        "--fields",
+        help="Comma-separated fields to update",
+    ),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Actually write tags to files (default is dry-run)",
+    ),
+    backup: bool = typer.Option(
+        True,
+        "--backup/--no-backup",
+        help="Backup original tags to database before writing",
+    ),
+    source: str = typer.Option(
+        "musicbrainz",
+        "--source",
+        help="Tag source to use: musicbrainz",
+    ),
+    limit: int = typer.Option(
+        0,
+        "--limit",
+        help="Maximum files to process (0 = unlimited)",
+        min=0,
+    ),
+) -> None:
+    """Write corrected tags back to audio files."""
+    cfg = _load_config(config)
+    if db:
+        cfg.database.path = str(db)
+
+    database = Database(str(cfg.database.resolved()))
+
+    selected_fields = {f.strip().lower() for f in fields.split(",")}
+    try:
+        from soundaudit.actuator.tags import validate_fields
+        selected_fields = validate_fields(selected_fields)
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    if source != "musicbrainz":
+        console.print(f"[red]Unknown source: {source}. Only 'musicbrainz' is supported.[/red]")
+        raise typer.Exit(1)
+
+    if not apply and not cfg.actuator.dry_run:
+        # If --apply not given but config says dry_run=False, still require --apply for safety
+        pass
+
+    dry_run = not apply
+
+    from soundaudit.db.store import DBFile
+    with database.session() as s:
+        query = s.query(DBFile).filter(DBFile.mb_recording_id.is_not(None))
+        if limit > 0:
+            query = query.limit(limit)
+        files = query.all()
+        s.expunge_all()
+
+    if not files:
+        console.print("[green]No files with resolved MusicBrainz data found.[/green]")
+        return
+
+    console.print(
+        f"{'[bold cyan]Preview[/bold cyan]' if dry_run else '[bold green]Applying[/bold green]'} "
+        f"tag updates for {len(files)} file(s) — fields: {', '.join(sorted(selected_fields))}"
+    )
+
+    fixed = 0
+    skipped = 0
+    errors = 0
+
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("File", style="dim", max_width=50)
+    table.add_column("Field", style="yellow")
+    table.add_column("Before", style="red")
+    table.add_column("After", style="green")
+
+    for db_file in files:
+        tags = resolved_metadata_to_tags(
+            db_file.mb_title,
+            db_file.mb_artist,
+            db_file.mb_album,
+            db_file.mb_album_artist,
+            db_file.mb_year,
+            db_file.mb_genre,
+        )
+        path = Path(db_file.path)
+
+        try:
+            original = snapshot_tags(path)
+        except Exception as exc:
+            console.print(f"[red]Cannot read {path}: {exc}[/red]")
+            errors += 1
+            continue
+
+        # Determine which fields would actually change
+        changes: list[tuple[str, str, str]] = []
+        for field in sorted(selected_fields):
+            old_val = str(original.get(field) or "")
+            new_val = str(getattr(tags, field) or "")
+            if new_val and old_val != new_val:
+                changes.append((field, old_val or "—", new_val))
+
+        if not changes:
+            skipped += 1
+            if not dry_run:
+                try:
+                    database.save_written_tags(db_file.id, tags, selected_fields)
+                except Exception:
+                    pass
+            continue
+
+        for field, old_val, new_val in changes:
+            table.add_row(str(path.name), field, old_val, new_val)
+
+        if not dry_run:
+            try:
+                backup_snapshot = write_tags(path, tags, fields=selected_fields, backup=backup)
+                if backup:
+                    database.save_tag_backup(db_file.id, backup_snapshot)
+                database.save_written_tags(db_file.id, tags, selected_fields)
+                fixed += 1
+            except TagWriteError as exc:
+                console.print(f"[red]Write failed for {path}: {exc}[/red]")
+                errors += 1
+
+    console.print(table)
+    if dry_run:
+        console.print(f"\n[bold]Preview complete.[/bold] {fixed + skipped + errors} files — {fixed} would change, {skipped} unchanged, {errors} errors.")
+        console.print("[dim]Add --apply to write these changes.[/dim]")
+    else:
+        console.print(f"\n[bold]Done.[/bold] {fixed} files updated, {skipped} unchanged, {errors} errors.")
+
+
+def _auto_write_tags(
+    database: Database,
+    results: list[tuple[int, object]],
+    fields: set[str],
+    backup: bool = True,
+) -> None:
+    """Write MusicBrainz-resolved tags back to files."""
+    fixed = 0
+    errors = 0
+    for file_id, md in results:
+        from soundaudit.db.store import DBFile
+        with database.session() as s:
+            db_file = s.query(DBFile).filter_by(id=file_id).first()
+            if not db_file:
+                continue
+            path = Path(db_file.path)
+
+        tags = resolved_metadata_to_tags(
+            md.title, md.artist, md.album, md.album_artist, md.year, md.genre
+        )
+        try:
+            backup_snapshot = write_tags(path, tags, fields=fields, backup=backup)
+            if backup:
+                database.save_tag_backup(file_id, backup_snapshot)
+            database.save_written_tags(file_id, tags, fields)
+            fixed += 1
+        except TagWriteError as exc:
+            console.print(f"[red]Auto-write failed for {path}: {exc}[/red]")
+            errors += 1
+
+    console.print(f"[green]Auto-wrote tags to {fixed} file(s).[/green]" + (f" [red]{errors} errors.[/red]" if errors else ""))
 
 
 def _report_transcodes(

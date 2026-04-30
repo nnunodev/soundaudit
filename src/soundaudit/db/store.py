@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import weakref
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -28,6 +29,10 @@ from soundaudit.models import AudioFormat, FileInfo, TrackTags
 
 class Base(DeclarativeBase):
     pass
+
+
+# Global weak registry of engines so we can force-close all connections
+_engine_refs: list[weakref.ref] = []
 
 
 class DBFile(Base):  # type: ignore[valid-type,misc]
@@ -88,8 +93,26 @@ class DBFile(Base):  # type: ignore[valid-type,misc]
     corruption_reason = Column(Text)
     spectral_cutoff_hz = Column(Integer)
     transcode_reason = Column(Text)
+
+    # MusicBrainz resolution
+    mb_recording_id = Column(String, index=True)
+    mb_release_id = Column(String)
+    mb_track_id = Column(String)
+    mb_score = Column(Float, default=0.0)
+    mb_match_date = Column(DateTime)
+    mb_title = Column(String)
+    mb_artist = Column(String)
+    mb_album = Column(String)
+    mb_album_artist = Column(String)
+    mb_year = Column(Integer)
+    mb_genre = Column(String)
+
     duplicate_group_id = Column(Integer)
     acoustid_group_id = Column(Integer, index=True)
+
+    # Phase 4 — tag writeback backup
+    tag_backup_json = Column(Text)
+    tag_fix_date = Column(DateTime)
 
     def __repr__(self) -> str:
         return f"<DBFile {self.path}>"
@@ -145,6 +168,7 @@ class Database:
     def __init__(self, db_path: str) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.engine = create_engine(f"sqlite:///{db_path}")
+        _engine_refs.append(weakref.ref(self.engine))
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
         # Auto-migrate tables to add any new columns since last version
@@ -153,6 +177,18 @@ class Database:
         _migrate_table(self.engine, "scan_history", ScanHistory)
         # Enable WAL for better concurrent reads
         event.listen(self.engine, "connect", _enable_wal)
+
+    @staticmethod
+    def close_all() -> None:
+        """Dispose every engine SoundAudit has opened.
+
+        This releases file handles so Windows can delete the .db.
+        """
+        for ref in list(_engine_refs):
+            engine = ref()
+            if engine is not None:
+                engine.dispose()
+        _engine_refs.clear()
 
     def session(self) -> Session:
         return self.Session()
@@ -251,8 +287,71 @@ class Database:
 
         db_file.last_scanned = datetime.utcnow()
 
+    def save_tag_backup(self, file_id: int, backup: dict) -> None:
+        """Store original tags JSON before a write operation."""
+        import json
+
+        with self.session() as s:
+            row = s.query(DBFile).filter_by(id=file_id).first()
+            if row:
+                row.tag_backup_json = json.dumps(backup, ensure_ascii=False)
+                s.commit()
+
+    def save_written_tags(self, file_id: int, tags, fields: set[str]) -> None:
+        """Update DB columns to reflect what was just written to disk.
+
+        Also sets tag_fix_date so the TUI can distinguish fixed vs pending.
+        """
+        with self.session() as s:
+            row = s.query(DBFile).filter_by(id=file_id).first()
+            if not row:
+                return
+            if "title" in fields:
+                row.title = tags.title
+            if "artist" in fields:
+                row.artist = tags.artist
+            if "album" in fields:
+                row.album = tags.album
+            if "album_artist" in fields:
+                row.album_artist = tags.album_artist
+            if "track_number" in fields:
+                row.track_number = tags.track_number
+            if "track_total" in fields:
+                row.track_total = tags.track_total
+            if "disc_number" in fields:
+                row.disc_number = tags.disc_number
+            if "disc_total" in fields:
+                row.disc_total = tags.disc_total
+            if "year" in fields:
+                row.year = tags.year
+            if "genre" in fields:
+                row.genre = tags.genre
+            if "isrc" in fields:
+                row.isrc = tags.isrc
+            row.tag_fix_date = datetime.utcnow()
+            s.commit()
+
 
 def _enable_wal(dbapi_conn, _connection_record):
     dbapi_conn.execute("PRAGMA journal_mode=WAL")
     dbapi_conn.execute("PRAGMA synchronous=NORMAL")
     dbapi_conn.execute("PRAGMA cache_size=-64000")  # 64MB
+    dbapi_conn.execute("PRAGMA busy_timeout = 5000")  # wait 5s on lock
+
+
+def reset_database(db_path: str | Path) -> None:
+    """Delete the SQLite database and its WAL sidecars.
+
+    Disposes any pooled connections first so Windows releases the file handle.
+    Raises PermissionError if the file is still locked.
+    """
+    path = Path(db_path)
+    # Dispose every engine SoundAudit has ever created so file handles are released
+    Database.close_all()
+
+    if path.exists():
+        path.unlink()
+    for sidecar in (path.with_suffix(".db-wal"), path.with_suffix(".db-shm")):
+        if sidecar.exists():
+            sidecar.unlink()
+

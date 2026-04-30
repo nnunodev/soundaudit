@@ -316,37 +316,28 @@ def analyze_library_transcodes(
         rows = q.all()
 
     if not rows:
-        msg = "[green]No lossless files to analyze.[/green]"
+        msg = "No lossless files to analyze."
         if log_callback:
             log_callback(msg)
         else:
-            c.print(msg)
+            c.print(f"[green]{msg}[/green]")
         return []
 
-    msg = f"[cyan]Analysing {len(rows)} lossless file(s) for spectral transcodes...[/cyan]"
+    msg = f"Analysing {len(rows)} lossless file(s) for spectral transcodes..."
     if log_callback:
         log_callback(msg)
     else:
-        c.print(msg)
+        c.print(f"[cyan]{msg}[/cyan]")
 
     results: list[SpectralResult] = []
 
     def _worker(db_file: DBFile) -> SpectralResult:
-        res = analyze_file(
+        """Pure analysis — no DB writes (avoids cross-thread locking)."""
+        return analyze_file(
             db_file.path,
             sample_rate_hz=db_file.sample_rate_hz or 44100,
             probed_duration=db_file.duration_seconds or None,
         )
-        # Persist immediately so a crash doesn't lose progress.
-        with database.session() as s:
-            row = s.query(DBFile).filter_by(path=db_file.path).first()
-            if row:
-                row.is_transcode = int(res.is_transcode)
-                row.transcode_confidence = res.confidence
-                row.transcode_reason = res.reason
-                row.spectral_cutoff_hz = res.cutoff_band_hz
-            s.commit()
-        return res
 
     processed = 0
     total = len(rows)
@@ -354,23 +345,39 @@ def analyze_library_transcodes(
         for res in pool.map(_worker, rows):
             processed += 1
             results.append(res)
-            if processed % 50 == 0 or processed == total:
+            if processed % 10 == 0 or processed == total:
                 line = (
-                    f"  [dim]{processed}/{total}  "
+                    f"  {processed}/{total}  "
                     f"transcodes={sum(1 for r in results if r.is_transcode)}"
-                    f"[/dim]"
                 )
                 if log_callback:
                     log_callback(line)
                 else:
-                    c.print(line, end="\r")
+                    c.print(f"  [dim]{line}[/dim]", end="\r")
+
+    # Batch-write all results in a single session — no cross-thread contention.
+    msg = "Saving transcode results..."
+    if log_callback:
+        log_callback(msg)
+    else:
+        c.print(f"  [dim]{msg}[/dim]")
+
+    with database.session() as s:
+        for db_file, res in zip(rows, results):
+            row = s.query(DBFile).filter_by(path=db_file.path).first()
+            if row:
+                row.is_transcode = int(res.is_transcode)
+                row.transcode_confidence = res.confidence
+                row.transcode_reason = res.reason
+                row.spectral_cutoff_hz = res.cutoff_band_hz
+        s.commit()
 
     transcode_count = sum(1 for r in results if r.is_transcode)
     msg = (
-        f"[green]Done. {transcode_count}/{len(results)} flagged as possible transcodes.[/green]"
+        f"Done. {transcode_count}/{len(results)} flagged as possible transcodes."
     )
     if log_callback:
         log_callback(msg)
     else:
-        c.print(msg)
+        c.print(f"[green]{msg}[/green]")
     return results

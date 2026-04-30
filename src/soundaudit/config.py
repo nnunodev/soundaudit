@@ -55,6 +55,7 @@ class FingerprintConfig(BaseModel):
     enabled: bool = True
     fpcalc_path: str = "/usr/bin/fpcalc"
     cache_only: bool = False
+    api_key: str = ""
 
 
 class ReportingConfig(BaseModel):

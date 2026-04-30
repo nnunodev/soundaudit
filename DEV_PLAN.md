@@ -6,7 +6,7 @@ Working document. **Not versioned.** Updated as we go.
 
 ## Status
 
-**Phase:** Scaffold → Core implementation  
+**Phase:** Reporting + Export / Phase 5 (next)  
 **Remote:** https://forgejo.voidnode.dev/nuno/soundaudit.git (Forgejo primary, mirrors to GitHub manually)  
 **Language:** Python 3.12+, Hatch build, Typer CLI, Rich output, SQLAlchemy 2.1  
 
@@ -83,17 +83,20 @@ soundaudit report --corrupt
 - [x] Batch parallel analysis with progress logging
 - [x] 13 tests covering genuine, 128k, 320k, ambiguous, silence, empty cases
 
-### Phase 3 — MusicBrainz Resolver (Medium value, high effort)
-- [ ] Search by existing ISRC (if present) or acoustid
-- [ ] Pull canonical tags: title, artist, album, year, genre, MBID
-- [ ] CLI: `soundaudit resolve --auto-write|--dry-run`
-- [ ] Rate limiting + retry logic for MB API
+### Phase 3 — MusicBrainz Resolver ✅ (Done)
+- [x] Search by existing ISRC (if present) or acoustid
+- [x] Pull canonical tags: title, artist, album, year, genre, MBID
+- [x] TUI: "Resolve Tags" toggle on ScanScreen (unchecked by default, runs after scan)
+- [x] TUI: Dashboard shows resolved file count
+- [x] CLI: `soundaudit resolve --auto-write|--dry-run`
+- [x] Rate limiting + retry logic for MB API
 
-### Phase 4 — Tag Updater / Writeback (Medium value, low effort)
-- [ ] Write corrected tags back to files via mutagen
-- [ ] Preserve existing tags we don't touch (comment, lyrics, etc.)
-- [ ] Backup original tags before write (store in DB as JSON)
-- [ ] CLI: `soundaudit fix --fields artist,album,year`
+### Phase 4 — Tag Updater / Writeback ✅ (Done)
+- [x] Write corrected tags back to files via mutagen (FLAC, MP3, M4A, OGG, WAVE, APE)
+- [x] Preserve existing tags we don't touch (comment, lyrics, etc.)
+- [x] Backup original tags before write (store in DB as JSON via `tag_backup_json`)
+- [x] CLI: `soundaudit fix --fields artist,album,year` (dry-run by default; `--apply` to write)
+- [x] Wired `--auto-write` into `soundaudit resolve` (write MB-resolved tags immediately)
 
 ### Phase 5 — Reporting + Export (Now part of Phase 1)
 - [x] JSON / CSV / Markdown export via `--output` / `-o`
@@ -131,4 +134,4 @@ soundaudit report --corrupt
 - Download staging: `/mnt/nas2/Albums` (kept outside Music to avoid Navidrome dup scanning)
 - Docker image based on `python:3.12-alpine` with ffmpeg
 
-Last updated: 2026-04-22
+Last updated: 2026-04-30

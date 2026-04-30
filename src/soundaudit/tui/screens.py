@@ -42,9 +42,18 @@ from soundaudit.analyzer.duplicates import (
     find_duplicate_groups,
     write_duplicate_groups,
 )
+from soundaudit.analyzer.transcode import analyze_library_transcodes
+from soundaudit.actuator.tags import (
+    TagWriteError,
+    resolved_metadata_to_tags,
+    snapshot_tags,
+    validate_fields,
+    write_tags,
+)
 from soundaudit.config import AppConfig
 from soundaudit.db.store import AcoustidGroup, Database
 from soundaudit.models import FileInfo
+from soundaudit.resolver.musicbrainz import MusicBrainzResolver
 from soundaudit.scanner.walker import discover_files
 
 
@@ -55,11 +64,12 @@ class DashboardScreen(Screen[None]):
         ("q", "quit", "Quit"),
         ("s", "scan", "Scan"),
         ("r", "report", "Report"),
+        ("f", "fix", "Fix Tags"),
         ("R", "reset", "Reset DB"),
     ]
 
     NAV_IDS: ClassVar[list[str]] = [
-        "btn-scan", "btn-report", "btn-reset", "btn-quit"
+        "btn-scan", "btn-report", "btn-fix", "btn-reset", "btn-quit"
     ]
     _nav_index: reactive[int] = reactive(0)
 
@@ -75,6 +85,7 @@ class DashboardScreen(Screen[None]):
             with Horizontal(id="actions-row"):
                 yield Static("▸ Scan       [dim]s[/dim]", id="btn-scan", classes="nav-item")
                 yield Static("▸ Reports    [dim]r[/dim]", id="btn-report", classes="nav-item")
+                yield Static("▸ Fix Tags   [dim]f[/dim]", id="btn-fix", classes="nav-item")
                 yield Static("▸ Reset DB   [dim]R[/dim]", id="btn-reset", classes="nav-item")
                 yield Static("▸ Quit       [dim]q[/dim]", id="btn-quit", classes="nav-item")
         yield Footer()
@@ -120,6 +131,8 @@ class DashboardScreen(Screen[None]):
             self.action_scan()
         elif wid == "btn-report":
             self.action_report()
+        elif wid == "btn-fix":
+            self.action_fix()
         elif wid == "btn-reset":
             self._confirm_reset()
         elif wid == "btn-quit":
@@ -199,6 +212,27 @@ class DashboardScreen(Screen[None]):
                     .scalar()
                     or 0
                 )
+                resolved = (
+                    s.query(func.count(DBFile.id))
+                    .filter(DBFile.mb_recording_id.is_not(None))
+                    .scalar()
+                    or 0
+                )
+                pending = (
+                    s.query(func.count(DBFile.id))
+                    .filter(
+                        DBFile.mb_recording_id.is_not(None),
+                        DBFile.tag_fix_date.is_(None),
+                    )
+                    .scalar()
+                    or 0
+                )
+                fixed = (
+                    s.query(func.count(DBFile.id))
+                    .filter(DBFile.tag_fix_date.is_not(None))
+                    .scalar()
+                    or 0
+                )
             lines = [
                 f"[b]Database[/b]: {db_path.name}",
                 f"[b]Total[/b]   : {total:,}",
@@ -218,6 +252,18 @@ class DashboardScreen(Screen[None]):
                 lines.append(
                     f"[b]Transc[/b]  : {style}{transcode_count} suspects ({transcode_high} high)[/]"
                 )
+            if resolved:
+                lines.append(
+                    f"[b]Resolved[/b]: {resolved} files with MusicBrainz data"
+                )
+            if pending:
+                lines.append(
+                    f"[b]Pending[/b] : {pending} files awaiting tag write"
+                )
+            if fixed:
+                lines.append(
+                    f"[b]Fixed[/b]   : {fixed} files updated"
+                )
             stats_widget.update("\n".join(lines))
             # highlight first nav item on stats load
             self.query_one(f"#{self._nav_sel()}", Static).add_class("focused-nav")
@@ -230,6 +276,8 @@ class DashboardScreen(Screen[None]):
             self.action_scan()
         elif widget_id == "btn-report":
             self.action_report()
+        elif widget_id == "btn-fix":
+            self.action_fix()
         elif widget_id == "btn-reset":
             self._confirm_reset()
         elif widget_id == "btn-quit":
@@ -243,14 +291,22 @@ class DashboardScreen(Screen[None]):
             return
         app = self.app  # type: ignore[attr-defined]
         db_path = Path(app.get_db_path())
-        if db_path.exists():
-            try:
-                db_path.unlink()
-                self.notify("Database reset successfully.", severity="information", timeout=3)
-            except Exception as exc:
-                self.notify(f"Failed to reset database: {exc}", severity="error", timeout=5)
-        else:
+        if not db_path.exists():
             self.notify("No database found to reset.", severity="warning", timeout=3)
+            self._refresh_stats()
+            return
+        try:
+            from soundaudit.db.store import reset_database
+            reset_database(str(db_path))
+            self.notify("Database reset successfully.", severity="information", timeout=3)
+        except PermissionError as exc:
+            self.notify(
+                f"Database is locked — stop any running scan and try again. ({exc})",
+                severity="error",
+                timeout=5,
+            )
+        except Exception as exc:
+            self.notify(f"Failed to reset database: {exc}", severity="error", timeout=5)
         self._refresh_stats()
 
     def action_scan(self) -> None:
@@ -258,6 +314,9 @@ class DashboardScreen(Screen[None]):
 
     def action_report(self) -> None:
         self.app.push_screen("report")
+
+    def action_fix(self) -> None:
+        self.app.push_screen(FixTagsScreen())
 
     def action_reset(self) -> None:
         self._confirm_reset()
@@ -298,11 +357,11 @@ class ScanScreen(Screen[None]):
             with Vertical(id="path-list"):
                 yield Static("[dim]Paths[/dim]", id="path-label")
             with Horizontal(id="stats-row"):
-                yield Static("Found 0", id="stat-found")
-                yield Static("Scan 0", id="stat-scanned")
-                yield Static("Skip 0", id="stat-skipped")
-                yield Static("Save 0", id="stat-saved")
-                yield Static("Fingerprint [dim]off[/dim]", id="stat-fingerprint")
+                yield Static("F 0", id="stat-found")
+                yield Static("S 0", id="stat-scanned")
+                yield Static("K 0", id="stat-skipped")
+                yield Static("V 0", id="stat-saved")
+                yield Static("FP [dim]off[/dim]", id="stat-fingerprint")
             with Horizontal(id="discovery-row"):
                 yield Static("Disc", id="discovery-label")
                 yield ProgressBar(total=100, id="discovery-bar", show_eta=False)
@@ -341,37 +400,39 @@ class ScanScreen(Screen[None]):
                     classes="path-item checked",
                 )
             )
-        # ── Analysis options ──
-        path_list.mount(Static("", id="sep-analyze"))
-        opt_ids = ["opt-duplicates", "opt-acoustid", "opt-transcodes"]
+        # ── Scan mode presets ──
+        path_list.mount(Static("", id="sep-presets"))
+        preset_ids = ["preset-quick", "preset-standard", "preset-deep"]
         path_list.mount(
             Static(
-                "[green]✓[/green] Dup Groups     [dim]content-hash duplicates (auto)[/dim]",
-                id="opt-duplicates",
+                "[green]▸[/green] Quick    [dim]dups only[/dim]",
+                id="preset-quick",
                 classes="path-item checked",
             )
         )
         path_list.mount(
             Static(
-                "[red]✗[/red] AcoustID Dups  [dim]fingerprint duplicates[/dim]",
-                id="opt-acoustid",
+                "[dim]▸[/dim] Standard [dim]+ MusicBrainz[/dim]",
+                id="preset-standard",
                 classes="path-item unchecked",
             )
         )
         path_list.mount(
             Static(
-                "[red]✗[/red] Transcodes     [dim]fake-FLAC detection (slow)[/dim]",
-                id="opt-transcodes",
+                "[dim]▸[/dim] Deep     [dim]+ AcoustID + transcodes[/dim]",
+                id="preset-deep",
                 classes="path-item unchecked",
             )
         )
-        # Append options to focusable list so keyboard can reach them
-        self._path_ids.extend(opt_ids)
+        self._preset_ids = preset_ids
+        self._selected_preset = "preset-quick"
+        # Append presets to focusable list
+        self._path_ids.extend(preset_ids)
         # strip focus from everything non-interactive
         self.query_one("#scan-log", Log).can_focus = False
         self.query_one("#scan-title", Static).can_focus = False
         for sid in ("stat-found", "stat-scanned", "stat-skipped", "stat-saved",
-                    "discovery-label", "scanning-label", "current-file", "path-label", "sep-analyze"):
+                    "discovery-label", "scanning-label", "current-file", "path-label", "sep-presets"):
             node = self.query_one(f"#{sid}", Static)
             if node:
                 node.can_focus = False
@@ -406,8 +467,8 @@ class ScanScreen(Screen[None]):
         self._draw_focus()
 
     def _toggle_path(self, pid: str) -> None:
-        if pid.startswith("opt-"):
-            self._toggle_option_in_scan(pid)
+        if pid.startswith("preset-"):
+            self._select_preset(pid)
             return
         full, short = self._path_map[pid]
         was = self._path_selected[pid]
@@ -423,22 +484,27 @@ class ScanScreen(Screen[None]):
             node.add_class("unchecked")
             node.remove_class("checked")
 
-    def _toggle_option_in_scan(self, oid: str) -> None:
-        node = self.query_one(f"#{oid}", Static)
-        currently_checked = "checked" in node.classes
-        base = {
-            "opt-duplicates": "Dup Groups     [dim]content-hash duplicates (auto)[/dim]",
-            "opt-acoustid": "AcoustID Dups  [dim]fingerprint duplicates[/dim]",
-            "opt-transcodes": "Transcodes     [dim]fake-FLAC detection (slow)[/dim]",
-        }[oid]
-        if currently_checked:
-            node.update(f"[red]✗[/red] {base}")
-            node.remove_class("checked")
-            node.add_class("unchecked")
-        else:
-            node.update(f"[green]✓[/green] {base}")
-            node.add_class("checked")
-            node.remove_class("unchecked")
+    def _select_preset(self, pid: str) -> None:
+        """Single-select preset: clear others, highlight chosen."""
+        if self._selected_preset == pid:
+            return
+        self._selected_preset = pid
+        labels = {
+            "preset-quick": "Quick    [dim]dups only[/dim]",
+            "preset-standard": "Standard [dim]+ MusicBrainz[/dim]",
+            "preset-deep": "Deep     [dim]+ AcoustID + transcodes[/dim]",
+        }
+        for preset_id in self._preset_ids:
+            node = self.query_one(f"#{preset_id}", Static)
+            is_active = preset_id == pid
+            if is_active:
+                node.update(f"[green]▸[/green] {labels[preset_id]}")
+                node.add_class("checked")
+                node.remove_class("unchecked")
+            else:
+                node.update(f"[dim]▸[/dim] {labels[preset_id]}")
+                node.remove_class("checked")
+                node.add_class("unchecked")
 
     def on_key(self, event) -> None:
         key = event.key
@@ -487,17 +553,17 @@ class ScanScreen(Screen[None]):
                     self.app.pop_screen()
 
     def watch_files_found(self, value: int) -> None:
-        self.query_one("#stat-found", Static).update(f"Found {value:,}")
+        self.query_one("#stat-found", Static).update(f"F {value:,}")
 
     def watch_files_scanned(self, value: int) -> None:
         total = max(self.files_found, 1)
-        self.query_one("#stat-scanned", Static).update(f"Scan {value:,}/{total:,}")
+        self.query_one("#stat-scanned", Static).update(f"S {value:,}/{total:,}")
 
     def watch_files_skipped(self, value: int) -> None:
-        self.query_one("#stat-skipped", Static).update(f"Skip {value:,}")
+        self.query_one("#stat-skipped", Static).update(f"K {value:,}")
 
     def watch_files_saved(self, value: int) -> None:
-        self.query_one("#stat-saved", Static).update(f"Save {value:,}")
+        self.query_one("#stat-saved", Static).update(f"V {value:,}")
 
     def watch_current_file(self, value: str) -> None:
         display = Path(value).name if value else ""
@@ -531,9 +597,9 @@ class ScanScreen(Screen[None]):
     def watch_fingerprint_enabled(self, value: bool) -> None:
         node = self.query_one("#stat-fingerprint", Static)
         if value:
-            node.update("Fingerprint [green]ON[/green]")
+            node.update("FP [green]ON[/green]")
         else:
-            node.update("Fingerprint [dim]off[/dim]")
+            node.update("FP [dim]off[/dim]")
 
     def _toggle_fingerprint(self) -> None:
         self.fingerprint_enabled = not self.fingerprint_enabled
@@ -588,12 +654,13 @@ class ScanScreen(Screen[None]):
                 "No paths selected. Toggle at least one."
             )
             return
-        # Capture analysis choices from UI before worker starts
+        # Map selected preset to analysis choices
+        preset = getattr(self, "_selected_preset", "preset-quick")
         self._analysis_choices: dict[str, bool] = {
-            "duplicates": "checked" in self.query_one("#opt-duplicates", Static).classes,
-            "acoustid": "checked" in self.query_one("#opt-acoustid", Static).classes,
-            "transcodes": "checked" in self.query_one("#opt-transcodes", Static).classes,
-        }
+            "preset-quick": {"duplicates": True, "acoustid": False, "transcodes": False, "resolve": False},
+            "preset-standard": {"duplicates": True, "acoustid": False, "transcodes": False, "resolve": True},
+            "preset-deep": {"duplicates": True, "acoustid": True, "transcodes": True, "resolve": True},
+        }.get(preset, {"duplicates": True, "acoustid": False, "transcodes": False, "resolve": False})
         self._selected_paths = selected
         self.files_found = 0
         self.files_scanned = 0
@@ -772,49 +839,90 @@ class ScanScreen(Screen[None]):
 
         if choices.get("duplicates", True):
             try:
-                app.call_from_thread(log.write_line, "Analyzing content-hash duplicates...")
+                app.call_from_thread(log.write_line, "▸ Analyzing content-hash duplicates...")
                 groups = find_duplicate_groups(database)
                 if groups:
                     write_duplicate_groups(database, groups)
                     total_wasted = sum(r.wasted_bytes for r in groups)
                     app.call_from_thread(
                         log.write_line,
-                        f"Found {len(groups)} duplicate groups ({sum(r.file_count for r in groups)} files). "
+                        f"  Found {len(groups)} duplicate groups ({sum(r.file_count for r in groups)} files). "
                         f"Wasted: {_human_size(total_wasted)}.",
                     )
                 else:
-                    app.call_from_thread(log.write_line, "No content-hash duplicates found.")
+                    app.call_from_thread(log.write_line, "  No content-hash duplicates found.")
             except Exception as exc:
-                app.call_from_thread(log.write_line, f"Duplicate analysis failed: {exc}")
+                app.call_from_thread(log.write_line, f"ERROR: Duplicate analysis failed: {exc}")
 
         if choices.get("acoustid"):
             try:
-                app.call_from_thread(log.write_line, "Analyzing AcoustID duplicates...")
+                app.call_from_thread(log.write_line, "▸ Analyzing AcoustID duplicates...")
                 ac_groups = find_acoustid_groups(database)
                 if ac_groups:
                     write_acoustid_groups(database, ac_groups)
                     total_wasted = sum(r.wasted_bytes for r in ac_groups)
                     app.call_from_thread(
                         log.write_line,
-                        f"Found {len(ac_groups)} AcoustID groups ({sum(r.file_count for r in ac_groups)} files). "
+                        f"  Found {len(ac_groups)} AcoustID groups ({sum(r.file_count for r in ac_groups)} files). "
                         f"Wasted: {_human_size(total_wasted)}.",
                     )
                 else:
-                    app.call_from_thread(log.write_line, "No AcoustID duplicates found.")
+                    app.call_from_thread(log.write_line, "  No AcoustID duplicates found.")
             except Exception as exc:
-                app.call_from_thread(log.write_line, f"AcoustID analysis failed: {exc}")
+                app.call_from_thread(log.write_line, f"ERROR: AcoustID analysis failed: {exc}")
 
         if choices.get("transcodes"):
             try:
-                app.call_from_thread(log.write_line, "Analyzing transcodes...")
+                app.call_from_thread(log.write_line, "▸ Analyzing transcodes...")
                 from soundaudit.analyzer.transcode import analyze_library_transcodes
                 analyze_library_transcodes(
                     database,
                     workers=4,
-                    log_callback=lambda msg: app.call_from_thread(log.write_line, msg),
+                    log_callback=lambda msg: app.call_from_thread(log.write_line, f"  {msg}"),
                 )
             except Exception as exc:
-                app.call_from_thread(log.write_line, f"Transcode analysis failed: {exc}")
+                app.call_from_thread(log.write_line, f"ERROR: Transcode analysis failed: {exc}")
+
+        if choices.get("resolve"):
+            try:
+                app.call_from_thread(log.write_line, "▸ Resolving MusicBrainz metadata...")
+                app.call_from_thread(
+                    setattr, self, "current_file", "Resolving MusicBrainz metadata..."
+                )
+                resolver = MusicBrainzResolver(
+                    database,
+                    cfg.resolvers,
+                    cfg.fingerprinting,
+                )
+
+                def _resolve_progress(msg: str) -> None:
+                    if msg.startswith("  "):
+                        # Failure or summary line → log only
+                        app.call_from_thread(log.write_line, msg)
+                    elif msg.startswith("Resolving ") or msg.startswith("Done."):
+                        # Header / footer → log only
+                        app.call_from_thread(log.write_line, f"  {msg}")
+                    else:
+                        # Plain filename → yellow label only (no log spam)
+                        short = msg if len(msg) <= 55 else msg[:52] + "..."
+                        app.call_from_thread(setattr, self, "current_file", short)
+
+                results = resolver.resolve_library(
+                    dry_run=False,
+                    force=False,
+                    progress_callback=_resolve_progress,
+                )
+                if results:
+                    app.call_from_thread(
+                        log.write_line,
+                        f"  Resolved {len(results)} file(s) via MusicBrainz.",
+                    )
+                else:
+                    app.call_from_thread(log.write_line, "  No new files resolved.")
+                app.call_from_thread(setattr, self, "current_file", "")
+            except Exception as exc:
+                app.call_from_thread(log.write_line, f"ERROR: MusicBrainz resolution failed: {exc}")
+                app.call_from_thread(setattr, self, "current_file", "")
 
         app.call_from_thread(self.post_message, self.ScanComplete(saved=saved))
 
@@ -844,7 +952,7 @@ class ReportScreen(Screen[None]):
     ]
 
     TAB_IDS: ClassVar[list[str]] = [
-        "tab-summary", "tab-missing", "tab-duplicates", "tab-acoustid", "tab-transcodes", "tab-corrupt"
+        "tab-summary", "tab-missing", "tab-tagstatus", "tab-duplicates", "tab-acoustid", "tab-transcodes", "tab-corrupt"
     ]
     _tab_index: reactive[int] = reactive(0)
 
@@ -855,6 +963,7 @@ class ReportScreen(Screen[None]):
             with Horizontal(id="report-tabs"):
                 yield Static("Summary", id="tab-summary", classes="tab-link active-tab")
                 yield Static("Missing Tags", id="tab-missing", classes="tab-link")
+                yield Static("Tag Status", id="tab-tagstatus", classes="tab-link")
                 yield Static("Duplicates", id="tab-duplicates", classes="tab-link")
                 yield Static("AcoustID Dups", id="tab-acoustid", classes="tab-link")
                 yield Static("Transcodes", id="tab-transcodes", classes="tab-link")
@@ -899,6 +1008,9 @@ class ReportScreen(Screen[None]):
         elif tid == "tab-missing":
             self._activate_tab("tab-missing")
             self._load_missing_tags()
+        elif tid == "tab-tagstatus":
+            self._activate_tab("tab-tagstatus")
+            self._load_tag_status()
         elif tid == "tab-duplicates":
             self._activate_tab("tab-duplicates")
             self._load_duplicates()
@@ -922,6 +1034,8 @@ class ReportScreen(Screen[None]):
                 self._load_summary()
             elif widget_id == "tab-missing":
                 self._load_missing_tags()
+            elif widget_id == "tab-tagstatus":
+                self._load_tag_status()
             elif widget_id == "tab-duplicates":
                 self._load_duplicates()
             elif widget_id == "tab-acoustid":
@@ -1018,6 +1132,36 @@ class ReportScreen(Screen[None]):
                 table.add_row(sp, ", ".join(missing))
         except Exception:
             table.add_row("Error", "Could not load database")
+
+    def _load_tag_status(self) -> None:
+        table = self.query_one("#report-table", DataTable)
+        table.clear(columns=True)
+        table.add_columns("File", "MB Title", "Current Title", "Status")
+        app = self.app  # type: ignore[attr-defined]
+        try:
+            database = Database(app.get_db_path())
+            from soundaudit.db.store import DBFile
+            with database.session() as s:
+                files = (
+                    s.query(DBFile)
+                    .filter(DBFile.mb_recording_id.is_not(None))
+                    .order_by(DBFile.path)
+                    .limit(200)
+                    .all()
+                )
+            paths = [f.path for f in files]
+            short_paths = self._shorten_paths(paths)
+            for f, sp in zip(files, short_paths):
+                status = "Fixed" if f.tag_fix_date else "Pending"
+                style = "[green]" if f.tag_fix_date else "[yellow]"
+                table.add_row(
+                    sp,
+                    f.mb_title or "—",
+                    f.title or "—",
+                    f"{style}{status}[/]",
+                )
+        except Exception:
+            table.add_row("Error", "Could not load database", "", "")
 
     def _load_corrupt(self) -> None:
         table = self.query_one("#report-table", DataTable)
@@ -1264,6 +1408,8 @@ class ReportScreen(Screen[None]):
                 self._export_summary(db, exporter, fmt)
             elif tab == "tab-missing":
                 self._export_missing_tags(db, exporter, fmt)
+            elif tab == "tab-tagstatus":
+                self._export_tag_status(db, exporter, fmt)
             elif tab == "tab-duplicates":
                 self._export_duplicates(db, exporter, fmt)
             elif tab == "tab-acoustid":
@@ -1323,6 +1469,25 @@ class ReportScreen(Screen[None]):
         else:
             md_rows = [[r["file"], r["missing"]] for r in rows] if rows else []
             exporter.write_markdown("Missing Tags", [MarkdownSection("Files with Missing Tags", ["File", "Missing"], md_rows)])
+
+    def _export_tag_status(self, db: Database, exporter, fmt: str) -> None:
+        from soundaudit.db.store import DBFile
+        from soundaudit.reporter import MarkdownSection
+        with db.session() as s:
+            files = s.query(DBFile).filter(DBFile.mb_recording_id.is_not(None)).order_by(DBFile.path).all()
+        rows = [{
+            "file": f.path,
+            "mb_title": f.mb_title or "",
+            "current_title": f.title or "",
+            "status": "Fixed" if f.tag_fix_date else "Pending",
+        } for f in files]
+        if fmt == "json":
+            exporter.write_json({"report_type": "tag_status", "files": rows})
+        elif fmt == "csv":
+            exporter.write_csv(rows)
+        else:
+            md_rows = [[r["file"], r["mb_title"], r["current_title"], r["status"]] for r in rows] if rows else []
+            exporter.write_markdown("Tag Status", [MarkdownSection("Tag Write Status", ["File", "MB Title", "Current Title", "Status"], md_rows)])
 
     def _export_duplicates(self, db: Database, exporter, fmt: str) -> None:
         from soundaudit.db.store import DBFile, DuplicateGroup
@@ -1947,6 +2112,674 @@ class AnalyzerRunScreen(Screen[None]):
 
     def action_cancel(self) -> None:
         if not self._running:
+            self.app.pop_screen()
+
+    def action_quit(self) -> None:
+        self.app.exit()
+
+
+class FixTagsScreen(Screen[None]):
+    """Choose which fields to write and run tag fixer."""
+
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+        ("q", "quit", "Quit"),
+        ("escape", "cancel", "Back"),
+    ]
+
+    OPTION_IDS: ClassVar[list[str]] = [
+        "fld-title", "fld-artist", "fld-album", "fld-album_artist",
+        "fld-year", "fld-genre", "fld-track_number", "fld-track_total",
+        "fld-disc_number", "fld-disc_total", "fld-isrc",
+        "opt-dryrun", "opt-backup", "btn-run", "btn-back",
+    ]
+
+    FIELD_MAP: ClassVar[dict[str, str]] = {
+        "fld-title": "title",
+        "fld-artist": "artist",
+        "fld-album": "album",
+        "fld-album_artist": "album_artist",
+        "fld-year": "year",
+        "fld-genre": "genre",
+        "fld-track_number": "track_number",
+        "fld-track_total": "track_total",
+        "fld-disc_number": "disc_number",
+        "fld-disc_total": "disc_total",
+        "fld-isrc": "isrc",
+    }
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="scan-screen"):
+            yield Static("[b]Fix Tags[/b]  [dim]esc = back[/dim]", id="scan-title")
+            yield Static("[dim]Toggle fields to update from MusicBrainz data[/dim]", id="path-label")
+            yield Static("Files with resolved data: —", id="fix-count")
+            with Vertical(id="path-list"):
+                for oid, label in [
+                    ("fld-title", "Title"),
+                    ("fld-artist", "Artist"),
+                    ("fld-album", "Album"),
+                    ("fld-album_artist", "Album Artist"),
+                    ("fld-year", "Year"),
+                    ("fld-genre", "Genre"),
+                    ("fld-track_number", "Track Number"),
+                    ("fld-track_total", "Track Total"),
+                    ("fld-disc_number", "Disc Number"),
+                    ("fld-disc_total", "Disc Total"),
+                    ("fld-isrc", "ISRC"),
+                ]:
+                    yield Static(
+                        f"[green]✓[/green] {label}",
+                        id=oid,
+                        classes="path-item checked nav-item",
+                    )
+                yield Static("", id="sep-fix")
+                yield Static(
+                    "[green]✓[/green] Dry-run  [dim]preview only[/dim]",
+                    id="opt-dryrun",
+                    classes="path-item checked nav-item",
+                )
+                yield Static(
+                    "[green]✓[/green] Backup   [dim]save originals to DB[/dim]",
+                    id="opt-backup",
+                    classes="path-item checked nav-item",
+                )
+            with Horizontal(id="scan-actions"):
+                yield Static("Run", id="btn-run", classes="scan-link")
+                yield Static("Back", id="btn-back", classes="scan-link")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._opt_selected: dict[str, bool] = {
+            **{oid: True for oid in self.FIELD_MAP},
+            "opt-dryrun": True,
+            "opt-backup": True,
+        }
+        self._opt_focus_idx: int = 0
+        self._focus_group: str = "options"
+        self._draw_focus()
+        self._refresh_count()
+
+    def _refresh_count(self) -> None:
+        app = self.app  # type: ignore[attr-defined]
+        try:
+            db = Database(app.get_db_path())
+            from sqlalchemy import func
+            from soundaudit.db.store import DBFile
+            with db.session() as s:
+                count = (
+                    s.query(func.count(DBFile.id))
+                    .filter(DBFile.mb_recording_id.is_not(None))
+                    .scalar()
+                    or 0
+                )
+            self.query_one("#fix-count", Static).update(
+                f"Files with resolved data: [b]{count:,}[/b]"
+            )
+        except Exception:
+            self.query_one("#fix-count", Static).update(
+                "Files with resolved data: [red]—[/red]"
+            )
+
+    def _draw_focus(self) -> None:
+        for oid in self.OPTION_IDS:
+            self.query_one(f"#{oid}", Static).remove_class("focused-nav")
+        oid = self.OPTION_IDS[self._opt_focus_idx]
+        self.query_one(f"#{oid}", Static).add_class("focused-nav")
+
+    def _toggle_option(self, oid: str) -> None:
+        was = self._opt_selected[oid]
+        self._opt_selected[oid] = not was
+        checked = self._opt_selected[oid]
+        node = self.query_one(f"#{oid}", Static)
+        label = {
+            "fld-title": "Title",
+            "fld-artist": "Artist",
+            "fld-album": "Album",
+            "fld-album_artist": "Album Artist",
+            "fld-year": "Year",
+            "fld-genre": "Genre",
+            "fld-track_number": "Track Number",
+            "fld-track_total": "Track Total",
+            "fld-disc_number": "Disc Number",
+            "fld-disc_total": "Disc Total",
+            "fld-isrc": "ISRC",
+            "opt-dryrun": "Dry-run  [dim]preview only[/dim]",
+            "opt-backup": "Backup   [dim]save originals to DB[/dim]",
+        }.get(oid, "")
+        if checked:
+            node.update(f"[green]✓[/green] {label}")
+            node.add_class("checked")
+            node.remove_class("unchecked")
+        else:
+            node.update(f"[red]✗[/red] {label}")
+            node.remove_class("checked")
+            node.add_class("unchecked")
+
+    def on_key(self, event) -> None:
+        key = event.key
+        if key in ("up", "k"):
+            self._opt_focus_idx = max(0, self._opt_focus_idx - 1)
+            self._focus_group = "options"
+            self._draw_focus()
+            event.stop()
+        elif key in ("down", "j"):
+            self._opt_focus_idx = min(len(self.OPTION_IDS) - 1, self._opt_focus_idx + 1)
+            self._focus_group = "options"
+            self._draw_focus()
+            event.stop()
+        elif key in ("enter", "space"):
+            oid = self.OPTION_IDS[self._opt_focus_idx]
+            if oid in ("btn-run", "btn-back"):
+                if oid == "btn-run":
+                    self._run_fix()
+                else:
+                    self.app.pop_screen()
+            else:
+                self._toggle_option(oid)
+            event.stop()
+        elif key in ("escape", "q"):
+            self.app.pop_screen()
+            event.stop()
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id in self.FIELD_MAP or widget_id in ("opt-dryrun", "opt-backup"):
+            self._toggle_option(widget_id)
+        elif widget_id == "btn-run":
+            self._run_fix()
+        elif widget_id == "btn-back":
+            self.app.pop_screen()
+
+    def _run_fix(self) -> None:
+        selected_paths = [
+            self._path_map[pid][0]
+            for pid, sel in self._path_selected.items()
+            if sel
+        ]
+        if not selected_paths:
+            self.notify("No paths selected.", severity="warning", timeout=3)
+            return
+        preset = getattr(self, "_selected_preset", "preset-core")
+        preset_fields = {
+            "preset-core": {"title", "artist", "album", "year"},
+            "preset-full": {"title", "artist", "album", "year", "album_artist", "track_number", "track_total", "disc_number", "disc_total"},
+            "preset-all": {"title", "artist", "album", "year", "album_artist", "track_number", "track_total", "disc_number", "disc_total", "genre", "isrc"},
+        }
+        fields = preset_fields.get(preset, preset_fields["preset-core"])
+        try:
+            fields = validate_fields(fields)
+        except TagWriteError as exc:
+            self.notify(str(exc), severity="error", timeout=3)
+            return
+        dry_run = self._opt_selected.get("opt-dryrun", True)
+        backup = self._opt_selected.get("opt-backup", True)
+        self.app.push_screen(
+            FixTagsRunScreen(fields, selected_paths=selected_paths, dry_run=dry_run, backup=backup)
+        )
+
+
+class FixTagsScreen(Screen[None]):
+    """Choose paths, fields, and run tag fixer."""
+
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+        ("q", "quit", "Quit"),
+        ("escape", "cancel", "Back"),
+    ]
+
+    FIELD_MAP: ClassVar[dict[str, str]] = {
+        "fld-title": "title",
+        "fld-artist": "artist",
+        "fld-album": "album",
+        "fld-album_artist": "album_artist",
+        "fld-year": "year",
+        "fld-genre": "genre",
+        "fld-track_number": "track_number",
+        "fld-track_total": "track_total",
+        "fld-disc_number": "disc_number",
+        "fld-disc_total": "disc_total",
+        "fld-isrc": "isrc",
+    }
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="scan-screen"):
+            yield Static("[b]Fix Tags[/b]  [dim]esc = back[/dim]", id="scan-title")
+            yield Static("[dim]Select paths and fields to update[/dim]", id="path-label")
+            yield Static("Resolved files in selection: —", id="fix-count")
+            with Vertical(id="path-list"):
+                pass  # paths mounted dynamically
+            with Horizontal(id="scan-actions"):
+                yield Static("Run", id="btn-run", classes="scan-link")
+                yield Static("Back", id="btn-back", classes="scan-link")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        app = self.app  # type: ignore[attr-defined]
+        cfg = app.get_config()
+        full_paths = [str(p) for p in cfg.scan.paths]
+        short_paths = ReportScreen._shorten_paths(full_paths)
+
+        self._path_map: dict[str, tuple[str, str]] = {}
+        self._path_selected: dict[str, bool] = {}
+        self._path_ids: list[str] = []
+
+        path_list = self.query_one("#path-list", Vertical)
+
+        # Mount paths
+        for idx, (full, short) in enumerate(zip(full_paths, short_paths)):
+            pid = f"fix-path-{idx}"
+            self._path_map[pid] = (full, short)
+            self._path_selected[pid] = True
+            self._path_ids.append(pid)
+            path_list.mount(
+                Static(
+                    f"[green]✓[/green] {short}",
+                    id=pid,
+                    classes="path-item checked nav-item",
+                )
+            )
+
+        # ── Tag preset modes ──
+        path_list.mount(Static("", id="sep-presets"))
+        self._preset_ids = ["preset-core", "preset-full", "preset-all"]
+        self._selected_preset = "preset-core"
+        path_list.mount(
+            Static(
+                "[green]▸[/green] Core  [dim]title, artist, album, year[/dim]",
+                id="preset-core",
+                classes="path-item checked nav-item",
+            )
+        )
+        path_list.mount(
+            Static(
+                "[dim]▸[/dim] Full  [dim]+ track, disc, album artist[/dim]",
+                id="preset-full",
+                classes="path-item unchecked nav-item",
+            )
+        )
+        path_list.mount(
+            Static(
+                "[dim]▸[/dim] All   [dim]+ genre, ISRC[/dim]",
+                id="preset-all",
+                classes="path-item unchecked nav-item",
+            )
+        )
+
+        # Separator
+        path_list.mount(Static("", id="sep-options"))
+
+        # Options
+        self._opt_ids = ["opt-dryrun", "opt-backup"]
+        path_list.mount(
+            Static(
+                "[green]✓[/green] Dry-run  [dim]preview only[/dim]",
+                id="opt-dryrun",
+                classes="path-item checked nav-item",
+            )
+        )
+        path_list.mount(
+            Static(
+                "[green]✓[/green] Backup   [dim]save originals to DB[/dim]",
+                id="opt-backup",
+                classes="path-item checked nav-item",
+            )
+        )
+
+        self._focus_ids: list[str] = [*self._path_ids, *self._preset_ids, *self._opt_ids, "btn-run", "btn-back"]
+        self._focus_idx: int = 0
+        self._focus_group: str = "list"
+
+        self._opt_selected: dict[str, bool] = {
+            "opt-dryrun": True,
+            "opt-backup": True,
+        }
+
+        self._draw_focus()
+        self._refresh_count()
+
+    def _refresh_count(self) -> None:
+        app = self.app  # type: ignore[attr-defined]
+        selected_paths = [
+            self._path_map[pid][0]
+            for pid, sel in self._path_selected.items()
+            if sel
+        ]
+        if not selected_paths:
+            self.query_one("#fix-count", Static).update(
+                "Resolved files in selection: [yellow]0[/yellow]"
+            )
+            return
+        try:
+            db = Database(app.get_db_path())
+            from sqlalchemy import func
+            from soundaudit.db.store import DBFile
+            with db.session() as s:
+                q = s.query(func.count(DBFile.id)).filter(
+                    DBFile.mb_recording_id.is_not(None)
+                )
+                # build OR filters for path prefixes
+                from sqlalchemy import or_
+                q = q.filter(or_(*[DBFile.path.startswith(p) for p in selected_paths]))
+                count = q.scalar() or 0
+            self.query_one("#fix-count", Static).update(
+                f"Resolved files in selection: [b]{count:,}[/b]"
+            )
+        except Exception:
+            self.query_one("#fix-count", Static).update(
+                "Resolved files in selection: [red]—[/red]"
+            )
+
+    def _draw_focus(self) -> None:
+        for fid in self._focus_ids:
+            self.query_one(f"#{fid}", Static).remove_class("focused-nav")
+        current = self._focus_ids[self._focus_idx]
+        self.query_one(f"#{current}", Static).add_class("focused-nav")
+
+    def _toggle_item(self, fid: str) -> None:
+        if fid.startswith("fix-path-"):
+            was = self._path_selected[fid]
+            self._path_selected[fid] = not was
+            checked = self._path_selected[fid]
+            node = self.query_one(f"#{fid}", Static)
+            _, short = self._path_map[fid]
+            if checked:
+                node.update(f"[green]✓[/green] [b]{short}[/b]")
+                node.add_class("checked")
+                node.remove_class("unchecked")
+            else:
+                node.update(f"[red]✗[/red] [dim]{short}[/dim]")
+                node.remove_class("checked")
+                node.add_class("unchecked")
+            self._refresh_count()
+            return
+
+        if fid.startswith("preset-"):
+            self._select_preset(fid)
+            return
+
+        # option toggle (dry-run / backup)
+        was = self._opt_selected[fid]
+        self._opt_selected[fid] = not was
+        checked = self._opt_selected[fid]
+        node = self.query_one(f"#{fid}", Static)
+        label = {
+            "opt-dryrun": "Dry-run  [dim]preview only[/dim]",
+            "opt-backup": "Backup   [dim]save originals to DB[/dim]",
+        }.get(fid, "")
+        if checked:
+            node.update(f"[green]✓[/green] {label}")
+            node.add_class("checked")
+            node.remove_class("unchecked")
+        else:
+            node.update(f"[red]✗[/red] {label}")
+            node.remove_class("checked")
+            node.add_class("unchecked")
+
+    def _select_preset(self, pid: str) -> None:
+        if self._selected_preset == pid:
+            return
+        self._selected_preset = pid
+        labels = {
+            "preset-core": "Core  [dim]title, artist, album, year[/dim]",
+            "preset-full": "Full  [dim]+ track, disc, album artist[/dim]",
+            "preset-all": "All   [dim]+ genre, ISRC[/dim]",
+        }
+        for preset_id in self._preset_ids:
+            node = self.query_one(f"#{preset_id}", Static)
+            is_active = preset_id == pid
+            if is_active:
+                node.update(f"[green]▸[/green] {labels[preset_id]}")
+                node.add_class("checked")
+                node.remove_class("unchecked")
+            else:
+                node.update(f"[dim]▸[/dim] {labels[preset_id]}")
+                node.remove_class("checked")
+                node.add_class("unchecked")
+
+    def on_key(self, event) -> None:
+        key = event.key
+        list_len = len(self._focus_ids) - 2  # exclude buttons
+
+        if key in ("up", "k"):
+            if self._focus_group == "list":
+                self._focus_idx = max(0, self._focus_idx - 1)
+            else:
+                self._focus_group = "list"
+                self._focus_idx = list_len - 1
+            self._draw_focus()
+            event.stop()
+        elif key in ("down", "j"):
+            if self._focus_group == "list":
+                self._focus_idx = min(len(self._focus_ids) - 1, self._focus_idx + 1)
+                if self._focus_idx >= list_len:
+                    self._focus_group = "actions"
+            else:
+                self._focus_group = "actions"
+                self._focus_idx = list_len
+            self._draw_focus()
+            event.stop()
+        elif key in ("enter", "space"):
+            fid = self._focus_ids[self._focus_idx]
+            if fid == "btn-run":
+                self._run_fix()
+            elif fid == "btn-back":
+                self.app.pop_screen()
+            else:
+                self._toggle_item(fid)
+            event.stop()
+        elif key in ("escape", "q"):
+            self.app.pop_screen()
+            event.stop()
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id in self._focus_ids and widget_id not in ("btn-run", "btn-back"):
+            self._toggle_item(widget_id)
+        elif widget_id == "btn-run":
+            self._run_fix()
+        elif widget_id == "btn-back":
+            self.app.pop_screen()
+
+    def _run_fix(self) -> None:
+        selected_paths = [
+            self._path_map[pid][0]
+            for pid, sel in self._path_selected.items()
+            if sel
+        ]
+        if not selected_paths:
+            self.notify("No paths selected.", severity="warning", timeout=3)
+            return
+        preset = getattr(self, "_selected_preset", "preset-core")
+        preset_fields = {
+            "preset-core": {"title", "artist", "album", "year"},
+            "preset-full": {"title", "artist", "album", "year", "album_artist", "track_number", "track_total", "disc_number", "disc_total"},
+            "preset-all": {"title", "artist", "album", "year", "album_artist", "track_number", "track_total", "disc_number", "disc_total", "genre", "isrc"},
+        }
+        fields = preset_fields.get(preset, preset_fields["preset-core"])
+        try:
+            fields = validate_fields(fields)
+        except TagWriteError as exc:
+            self.notify(str(exc), severity="error", timeout=3)
+            return
+        dry_run = self._opt_selected.get("opt-dryrun", True)
+        backup = self._opt_selected.get("opt-backup", True)
+        self.app.push_screen(
+            FixTagsRunScreen(fields, selected_paths=selected_paths, dry_run=dry_run, backup=backup)
+        )
+
+
+class FixTagsRunScreen(Screen[None]):
+    """Show progress while writing tags."""
+
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+        ("q", "quit", "Quit"),
+        ("escape", "cancel", "Back"),
+    ]
+
+    def __init__(self, fields: set[str], *, selected_paths: list[str], dry_run: bool = True, backup: bool = True) -> None:
+        self._fields = fields
+        self._selected_paths = selected_paths
+        self._dry_run = dry_run
+        self._backup = backup
+        self._running = False
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="scan-screen"):
+            status = "Preview" if self._dry_run else "Writing"
+            yield Static(f"[b]{status} Tags[/b]  [dim]esc = back[/dim]", id="scan-title")
+            yield Log(id="scan-log")
+            with Horizontal(id="scan-actions"):
+                yield Static("Stop", id="btn-stop", classes="scan-link")
+                yield Static("Back", id="btn-back", classes="scan-link dimmed")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#scan-log", Log).can_focus = False
+        self.query_one("#btn-stop", Static).can_focus = False
+        self.query_one("#btn-back", Static).can_focus = False
+        self._running = True
+        self.run_worker(self._worker, exclusive=True, thread=True)
+
+    def _log(self, msg: str) -> None:
+        app = self.app  # type: ignore[attr-defined]
+        app.call_from_thread(
+            self.query_one("#scan-log", Log).write_line,
+            msg,
+        )
+
+    def _worker(self) -> None:
+        app = self.app  # type: ignore[attr-defined]
+        try:
+            db_path = app.get_db_path()
+            database = Database(db_path)
+            from soundaudit.db.store import DBFile
+            from sqlalchemy import or_
+
+            with database.session() as s:
+                files = (
+                    s.query(DBFile)
+                    .filter(DBFile.mb_recording_id.is_not(None))
+                    .filter(or_(*[DBFile.path.startswith(p) for p in self._selected_paths]))
+                    .all()
+                )
+                s.expunge_all()
+
+            if not files:
+                self._log("No files with resolved MusicBrainz data found in selected paths.")
+                self._running = False
+                app.call_from_thread(
+                    self.query_one("#btn-back", Static).remove_class, "dimmed"
+                )
+                return
+
+            total = len(files)
+            preview = "[dim](preview)[/dim]" if self._dry_run else ""
+            self._log(f"Processing {total} file(s) {preview}")
+            self._log(f"Paths: {len(self._selected_paths)} selected")
+            self._log(f"Fields: {', '.join(sorted(self._fields))}")
+            self._log("")
+
+            fixed = 0
+            skipped = 0
+            errors = 0
+
+            for idx, db_file in enumerate(files, 1):
+                # Check cancellation every iteration
+                if not self._running:
+                    self._log("Cancelled.")
+                    break
+
+                tags = resolved_metadata_to_tags(
+                    db_file.mb_title,
+                    db_file.mb_artist,
+                    db_file.mb_album,
+                    db_file.mb_album_artist,
+                    db_file.mb_year,
+                    db_file.mb_genre,
+                )
+                path = Path(db_file.path)
+
+                if not path.exists():
+                    self._log(f"  [dim]{idx}/{total}[/dim]  [red]✗ missing on disk[/red]  {path.name}")
+                    errors += 1
+                    continue
+
+                try:
+                    original = snapshot_tags(path)
+                except Exception as exc:
+                    self._log(f"  [dim]{idx}/{total}[/dim]  [red]✗ cannot read tags: {exc}[/red]  {path.name}")
+                    errors += 1
+                    continue
+
+                changes: list[tuple[str, str, str]] = []
+                for field in sorted(self._fields):
+                    old_val = str(original.get(field) or "")
+                    new_val = str(getattr(tags, field) or "")
+                    if new_val and old_val != new_val:
+                        changes.append((field, old_val or "—", new_val))
+
+                if not changes:
+                    self._log(f"  [dim]{idx}/{total}[/dim]  [dim]— unchanged[/dim]  {path.name}")
+                    skipped += 1
+                    if not self._dry_run:
+                        try:
+                            database.save_written_tags(db_file.id, tags, self._fields)
+                        except Exception:
+                            pass
+                    continue
+
+                # Show the changes
+                self._log(f"  [dim]{idx}/{total}[/dim]  [cyan]{path.name}[/cyan]")
+                for field, old_val, new_val in changes:
+                    self._log(f"      {field}: {old_val} → {new_val}")
+
+                if not self._dry_run:
+                    try:
+                        backup_snapshot = write_tags(path, tags, fields=self._fields, backup=self._backup)
+                        if self._backup:
+                            database.save_tag_backup(db_file.id, backup_snapshot)
+                        database.save_written_tags(db_file.id, tags, self._fields)
+                        fixed += 1
+                    except TagWriteError as exc:
+                        self._log(f"      [red]write failed: {exc}[/red]")
+                        errors += 1
+                else:
+                    fixed += 1
+
+            self._log("")
+            if not self._running:
+                self._log("[yellow]Stopped early.[/yellow]")
+            elif self._dry_run:
+                self._log(f"[bold]Preview complete.[/bold] {fixed} would change, {skipped} unchanged, {errors} errors.")
+            else:
+                self._log(f"[bold green]Done.[/bold green] {fixed} updated, {skipped} unchanged, {errors} errors.")
+
+        except Exception as exc:
+            import traceback
+            self._log(f"[red]CRASH: {exc}[/red]")
+            for line in traceback.format_exc().splitlines():
+                self._log(f"[dim]{line}[/dim]")
+        finally:
+            self._running = False
+            app.call_from_thread(
+                self.query_one("#btn-back", Static).remove_class, "dimmed"
+            )
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id == "btn-stop" and self._running:
+            self._running = False
+            self._log("Cancelling...")
+        elif widget_id in ("btn-back", "btn-stop") and not self._running:
+            self.app.pop_screen()
+
+    def action_cancel(self) -> None:
+        if self._running:
+            self._running = False
+            self._log("Cancelling...")
+        else:
             self.app.pop_screen()
 
     def action_quit(self) -> None:
