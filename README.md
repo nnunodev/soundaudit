@@ -1,26 +1,25 @@
 # SoundAudit
 
-A Python-based music library health scanner and metadata repair tool for FLAC/MP3 collections.
+A Python-based music library health scanner and metadata repair tool for FLAC/MP3/OGG/M4A collections.
 
 ## What It Does
 
-SoundAudit scans your local or network-mounted music library, extracts metadata with Mutagen, stores results in a local SQLite database, and reports what needs attention.
+SoundAudit scans your music library, extracts metadata, fingerprints audio, resolves canonical tags via MusicBrainz, detects transcodes and duplicates, then writes corrections back to your files — all with a fast terminal UI or scriptable CLI.
 
-### Current Capabilities
-- Parallel directory scanning with incremental re-scan (skips unchanged files by mtime)
-- Configurable content hashing: `head-only`, `head-tail`, `full`, or `none`
-- Tag extraction for FLAC, MP3, M4A, OGG, WAVE, APE
-- SQLite WAL persistence with incremental upserts
-- Rich CLI reports: summary, missing tags, corrupt files
-- Speed-optimized for slow storage (network file systems, USB drives)
+### Capabilities
 
-### Planned Features
-See [DEV_PLAN.md](DEV_PLAN.md) for the phased development plan.
-- Duplicate detection via AcoustID / content hash
-- Transcode detection via spectral analysis
-- MusicBrainz metadata resolver
-- Tag writeback and file rename actuator
-- HTML / JSON / CSV export
+| Feature | Status |
+|---------|--------|
+| Parallel directory scanning with incremental re-scan | ✅ |
+| Content hashing (head-only / head-tail / full / none) | ✅ |
+| Tag extraction (FLAC, MP3, M4A, OGG, WAVE, APE) | ✅ |
+| **Content-hash duplicate detection** | ✅ |
+| **AcoustID fingerprinting + fuzzy duplicates** | ✅ |
+| **Spectral transcode detection (fake-FLAC)** | ✅ |
+| **MusicBrainz metadata resolver** | ✅ |
+| **Tag writeback with backup** | ✅ |
+| **TUI with live progress + interactive reports** | ✅ |
+| JSON / CSV / Markdown export | ✅ |
 
 ## Quick Start
 
@@ -28,25 +27,71 @@ See [DEV_PLAN.md](DEV_PLAN.md) for the phased development plan.
 # Install
 pip install -e ".[dev]"
 
-# Launch the interactive TUI
+# Launch the interactive TUI (recommended)
 soundaudit tui
 
-# Or use the CLI directly
+# --- CLI ---
+
 # Scan your library (head-only hash = fastest for large/network libraries)
 soundaudit scan ~/Music --db ~/.local/share/soundaudit/scan.db --workers 4
 
 # Re-scan only changed files (near-instant if nothing changed)
 soundaudit scan ~/Music --db ~/.local/share/soundaudit/scan.db
 
-# View summary
-soundaudit report
+# Resolve MusicBrainz metadata for missing tags
+soundaudit resolve --db ~/.local/share/soundaudit/scan.db
 
-# View missing tags
-soundaudit report --missing-tags
+# Preview tag fixes (dry-run by default)
+soundaudit fix --db ~/.local/share/soundaudit/scan.db --fields artist,album,title,year
 
-# View corrupt/unreadable files
-soundaudit report --corrupt
+# Actually write corrected tags to files
+soundaudit fix --apply --db ~/.local/share/soundaudit/scan.db
+
+# Resolve + write in one shot
+soundaudit resolve --auto-write --db ~/.local/share/soundaudit/scan.db
+
+# Reports
+soundaudit report                              # summary
+soundaudit report --missing-tags               # files missing title/artist/album
+soundaudit report --duplicates                 # duplicate groups with keeper recommendations
+soundaudit report --transcodes                 # suspected transcode files
+soundaudit report --corrupt                    # unreadable files
+soundaudit report --duplicates -o dups.json  # export to JSON
+
+# Analysis passes (on already-scanned data)
+soundaudit analyze --duplicates                # content-hash dups
+soundaudit analyze --acoustid                  # fingerprint dups
+soundaudit analyze --transcodes --workers 4    # spectral fake-FLAC detection
 ```
+
+## TUI Navigation
+
+| Screen | Key | What you can do |
+|--------|-----|---------------|
+| **Dashboard** | `s` | Scan — choose paths, pick scan preset (Quick/Standard/Deep), start |
+| **Dashboard** | `r` | Reports — 6 tabs: Summary, Missing Tags, Tag Status, Duplicates, AcoustID, Transcodes, Corrupt |
+| **Dashboard** | `f` | Fix Tags — select paths, pick preset (Core/Full/All), toggle dry-run, run |
+| **Dashboard** | `R` | Reset database |
+| **Reports** | `←→` or `hj` | Switch tabs |
+| **Reports** | `s` | Export current tab to JSON/CSV/Markdown |
+| **Any screen** | `q` | Quit |
+| **Any screen** | `esc` | Back |
+
+### Scan Presets
+
+| Preset | What runs after scan |
+|--------|----------------------|
+| **Quick** | Content-hash duplicate analysis only |
+| **Standard** | + MusicBrainz metadata resolution |
+| **Deep** | + AcoustID fingerprinting + transcode detection |
+
+### Fix Tags Presets
+
+| Preset | Fields written |
+|--------|---------------|
+| **Core** | title, artist, album, year |
+| **Full** | + album artist, track number/total, disc number/total |
+| **All** | + genre, ISRC |
 
 ## Hash Strategies
 
@@ -83,11 +128,17 @@ database:
 fingerprinting:
   enabled: false
   fpcalc_path: /usr/bin/fpcalc
+  api_key: "your-acoustid-key"
+
+resolvers:
+  rate_limit: 1.0
+  retry_count: 3
 ```
 
 Load it:
 ```bash
 soundaudit scan --config config.yaml
+soundaudit tui --config config.yaml
 ```
 
 ## Docker
@@ -103,11 +154,11 @@ Mounts your Music folder and persists the database locally.
 | Module | Purpose |
 |--------|---------|
 | `scanner` | Walk directories, read tags, compute hashes |
-| `analyzer` | Detect duplicates, corruption, transcodes |
-| `resolver` | MusicBrainz API lookups |
-| `reporter` | Console tables and HTML reports |
-| `actuator` | Apply fixes (tags, rename, dedupe) |
-| `tui` | Interactive terminal UI with live scan progress |
+| `analyzer` | Detect duplicates (content hash + AcoustID), transcodes, corruption |
+| `resolver` | MusicBrainz API lookups by ISRC / AcoustID / artist+title |
+| `actuator` | Write tags back to files (mutagen), backup originals to DB |
+| `reporter` | Console tables, JSON/CSV/Markdown export |
+| `tui` | Interactive terminal UI with live scan progress, reports, tag fixer |
 
 ## Performance Notes
 
@@ -132,7 +183,7 @@ Scan time: **~4.5 minutes** with `head-only` hash, 4 workers, over a network-mou
 
 ## Roadmap
 
-See [DEV_PLAN.md](DEV_PLAN.md) for the full phased development plan.
+See [DEV_PLAN.md](DEV_PLAN.md) for the full phased development plan. Phase 4 (tag writeback) is complete. Phase 5 is reporting enhancements and HTML export.
 
 ## License
 
