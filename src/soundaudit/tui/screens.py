@@ -430,8 +430,8 @@ class ScanScreen(Screen[None]):
         self._selected_preset = "preset-quick"
         # Append presets to focusable list
         self._path_ids.extend(preset_ids)
-        # strip focus from everything non-interactive
-        self.query_one("#scan-log", Log).can_focus = False
+        # strip focus from everything non-interactive except log (scrollable)
+        self.query_one("#scan-log", Log).can_focus = True
         self.query_one("#scan-title", Static).can_focus = False
         for sid in ("stat-found", "stat-scanned", "stat-skipped", "stat-saved",
                     "discovery-label", "scanning-label", "current-file", "path-label", "sep-presets"):
@@ -440,7 +440,7 @@ class ScanScreen(Screen[None]):
                 node.can_focus = False
         self._draw_focus()
         log = self.query_one("#scan-log", Log)
-        log.write_line("Ready. ↑↓ move, Enter/Space toggle, Tab = actions, f = fingerprint")
+        log.write_line("Ready. ↑↓ move, Enter/Space toggle, Tab = actions, f = fingerprint, g = focus log")
         self._update_progress_totals()
 
     def _draw_focus(self) -> None:
@@ -462,6 +462,9 @@ class ScanScreen(Screen[None]):
         )
         self._scan_focus_group = "paths"
         self._draw_focus()
+        pid = self._path_ids[self._path_focus_idx]
+        node = self.query_one(f"#{pid}", Static)
+        self.query_one("#path-list", Vertical).scroll_to_widget(node)
 
     def _refocus_action(self, delta: int) -> None:
         self._action_focus_idx = (self._action_focus_idx + delta) % 3
@@ -510,6 +513,22 @@ class ScanScreen(Screen[None]):
 
     def on_key(self, event) -> None:
         key = event.key
+        focused_wid = self.focused.id if self.focused else None
+        is_log_focused = focused_wid == "scan-log"
+
+        if is_log_focused and key in ("up", "down", "pageup", "pagedown"):
+            log = self.query_one("#scan-log", Log)
+            if key == "up":
+                log.scroll_up()
+            elif key == "down":
+                log.scroll_down()
+            elif key == "pageup":
+                log.scroll_page_up()
+            elif key == "pagedown":
+                log.scroll_page_down()
+            event.stop()
+            return
+
         if key in ("up", "k"):
             if self._scan_focus_group == "paths":
                 self._refocus_path(-1)
@@ -525,6 +544,9 @@ class ScanScreen(Screen[None]):
         elif key in ("right", "l"):
             if self._scan_focus_group == "actions":
                 self._refocus_action(1)
+            event.stop()
+        elif key == "g":
+            self.query_one("#scan-log", Log).focus()
             event.stop()
         elif key in ("tab",):
             if self._scan_focus_group == "paths":
@@ -979,6 +1001,14 @@ class ReportScreen(Screen[None]):
         key = event.key
         focused_wid = self.focused.id if self.focused else None
         is_table_focused = focused_wid == "report-table"
+
+        if key == "tab":
+            if is_table_focused:
+                self._tab_focus()
+            else:
+                self.query_one("#report-table", DataTable).focus()
+            event.stop()
+            return
 
         if key in ("left", "right", "h", "l"):
             self._tab_move(-1 if key in ("left", "h") else 1)
@@ -2273,7 +2303,9 @@ class FixTagsScreen(Screen[None]):
         for fid in self._focus_ids:
             self.query_one(f"#{fid}", Static).remove_class("focused-nav")
         current = self._focus_ids[self._focus_idx]
-        self.query_one(f"#{current}", Static).add_class("focused-nav")
+        node = self.query_one(f"#{current}", Static)
+        node.add_class("focused-nav")
+        self.query_one("#path-list", Vertical).scroll_to_widget(node)
 
     def _toggle_item(self, fid: str) -> None:
         if fid.startswith("fix-path-"):
@@ -2436,9 +2468,10 @@ class FixTagsRunScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#scan-log", Log).can_focus = False
-        self.query_one("#btn-stop", Static).can_focus = False
-        self.query_one("#btn-back", Static).can_focus = False
+        self.query_one("#scan-log", Log).can_focus = True
+        self.query_one("#btn-stop", Static).can_focus = True
+        self.query_one("#btn-back", Static).can_focus = True
+        self.query_one("#scan-log", Log).focus()
         self._running = True
         self.run_worker(self._worker, exclusive=True, thread=True)
 

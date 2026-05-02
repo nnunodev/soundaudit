@@ -29,14 +29,7 @@ class ScanConfig(BaseModel):
     @field_validator("paths")
     @classmethod
     def validate_paths(cls, v: list[str]) -> list[str]:
-        resolved = []
-        for p in v:
-            path = Path(p).expanduser().resolve()
-            if path.exists():
-                resolved.append(str(path))
-            else:
-                raise ValueError(f"Scan path does not exist: {p}")
-        return resolved
+        return [str(Path(p).expanduser()) for p in v]
 
 
 class DatabaseConfig(BaseModel):
