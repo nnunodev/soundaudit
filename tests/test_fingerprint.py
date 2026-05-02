@@ -24,8 +24,11 @@ class TestFingerprintAvailable:
             assert backend == "pyacoustid"
 
     def test_fpcalc_binary_available(self, tmp_path) -> None:
+        import os
+
         fake_fpcalc = tmp_path / "fpcalc"
         fake_fpcalc.write_text("#!/bin/sh\necho fpcalc")
+        os.chmod(fake_fpcalc, 0o755)
         with patch("soundaudit.fingerprint._pyacoustid", None):
             avail, backend = fingerprint_available(str(fake_fpcalc))
             # On Windows the fake script won't execute, so just check it doesn't crash
@@ -41,19 +44,25 @@ class TestFpWithFpcalc:
         assert result is None
 
     def test_returns_none_on_invalid_json(self, tmp_path) -> None:
+        import os
+
         binary = tmp_path / "fpcalc"
         # Create a fake binary that exits 0 but prints garbage
         binary.write_text("#!/bin/sh\necho garbage")
+        os.chmod(binary, 0o755)
         result = _fp_with_fpcalc("dummy.mp3", str(binary), console=None)
         assert result is None
 
     def test_parses_plain_text_output(self, tmp_path) -> None:
+        import os
+
         binary = tmp_path / "fpcalc"
         binary.write_text(
             "#!/bin/sh\n"
             'echo "DURATION=123"\n'
             'echo "FINGERPRINT=AQADtEmi..."\n'
         )
+        os.chmod(binary, 0o755)
         # On Windows subprocess won't run a shell script, skip there
         import sys
 
