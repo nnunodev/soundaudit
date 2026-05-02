@@ -2473,6 +2473,8 @@ class FixTagsRunScreen(Screen[None]):
         self.query_one("#btn-back", Static).can_focus = True
         self.query_one("#scan-log", Log).focus()
         self._running = True
+        self._action_focus_idx = 0
+        self._focus_group = "log"
         self.run_worker(self._worker, exclusive=True, thread=True)
 
     def _log(self, msg: str) -> None:
@@ -2598,6 +2600,70 @@ class FixTagsRunScreen(Screen[None]):
             app.call_from_thread(
                 self.query_one("#btn-back", Static).remove_class, "dimmed"
             )
+
+    def _draw_focus(self) -> None:
+        for bid in ("btn-stop", "btn-back"):
+            self.query_one(f"#{bid}", Static).remove_class("focused-nav")
+        if self._focus_group == "actions":
+            bids = ["btn-stop", "btn-back"]
+            bid = bids[self._action_focus_idx]
+            self.query_one(f"#{bid}", Static).add_class("focused-nav")
+
+    def _refocus_action(self, delta: int) -> None:
+        self._action_focus_idx = (self._action_focus_idx + delta) % 2
+        self._focus_group = "actions"
+        self._draw_focus()
+
+    def on_key(self, event) -> None:
+        key = event.key
+        focused_wid = self.focused.id if self.focused else None
+        is_log_focused = focused_wid == "scan-log"
+
+        if is_log_focused and key in ("up", "down", "pageup", "pagedown"):
+            log = self.query_one("#scan-log", Log)
+            if key == "up":
+                log.scroll_up()
+            elif key == "down":
+                log.scroll_down()
+            elif key == "pageup":
+                log.scroll_page_up()
+            elif key == "pagedown":
+                log.scroll_page_down()
+            event.stop()
+            return
+
+        if key == "tab":
+            if self._focus_group == "log":
+                self._focus_group = "actions"
+                self.query_one("#scan-log", Log).blur()
+                self._draw_focus()
+            else:
+                self._focus_group = "log"
+                for bid in ("btn-stop", "btn-back"):
+                    self.query_one(f"#{bid}", Static).remove_class("focused-nav")
+                self.query_one("#scan-log", Log).focus()
+            event.stop()
+            return
+
+        if key in ("left", "h"):
+            if self._focus_group == "actions":
+                self._refocus_action(-1)
+            event.stop()
+        elif key in ("right", "l"):
+            if self._focus_group == "actions":
+                self._refocus_action(1)
+            event.stop()
+        elif key in ("enter", "space", "return"):
+            if self._focus_group == "actions":
+                bids = ["btn-stop", "btn-back"]
+                bid = bids[self._action_focus_idx]
+                if bid == "btn-stop" and self._running:
+                    self.action_cancel()
+                elif bid == "btn-back" and not self._running:
+                    self.app.pop_screen()
+            event.stop()
+        else:
+            return
 
     def on_click(self, event) -> None:
         widget_id = getattr(getattr(event, "control", None), "id", None)
