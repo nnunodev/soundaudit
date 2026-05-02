@@ -1,27 +1,31 @@
+# SoundAudit example configuration
+# Place this in one of these locations:
+#   - ./config.yaml  (current directory)
+#   - Linux:   ~/.config/soundaudit/config.yaml
+#   - macOS:   ~/Library/Application Support/soundaudit/config.yaml
+#   - Windows: %APPDATA%\soundaudit\config.yaml
+
 scan:
   paths:
-    - /mnt/nas2/Music
-    - /mnt/nas2/to_move
+    - ~/Music
   extensions:
     - .flac
     - .mp3
     - .m4a
     - .ogg
-  workers: 8
+  workers: 4
   follow_symlinks: false
-
-database:
-  path: ~/.local/share/soundaudit/scan.db
+  hash_strategy: head-only
 
 resolvers:
-  musicbrainz:
-    rate_limit: 1.0  # seconds between requests
-    retry_count: 3
+  rate_limit: 1.0  # seconds between requests
+  retry_count: 3
 
 fingerprinting:
-  enabled: true
+  enabled: false
   fpcalc_path: /usr/bin/fpcalc
-  cache_only: false  # if true, skip unknown files (useful for resume)
+  api_key: "your-acoustid-key"
+  cache_only: false
 
 reporting:
   include_spectrograms: false

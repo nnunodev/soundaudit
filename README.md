@@ -24,7 +24,10 @@ SoundAudit scans your music library, extracts metadata, fingerprints audio, reso
 ## Quick Start
 
 ```bash
-# Install
+# Install from PyPI (when published)
+pip install soundaudit
+
+# Or install from source
 pip install -e ".[dev]"
 
 # Launch the interactive TUI (recommended)
@@ -33,22 +36,22 @@ soundaudit tui
 # --- CLI ---
 
 # Scan your library (head-only hash = fastest for large/network libraries)
-soundaudit scan ~/Music --db ~/.local/share/soundaudit/scan.db --workers 4
+soundaudit scan ~/Music --workers 4
 
 # Re-scan only changed files (near-instant if nothing changed)
-soundaudit scan ~/Music --db ~/.local/share/soundaudit/scan.db
+soundaudit scan ~/Music
 
 # Resolve MusicBrainz metadata for missing tags
-soundaudit resolve --db ~/.local/share/soundaudit/scan.db
+soundaudit resolve
 
 # Preview tag fixes (dry-run by default)
-soundaudit fix --db ~/.local/share/soundaudit/scan.db --fields artist,album,title,year
+soundaudit fix --fields artist,album,title,year
 
 # Actually write corrected tags to files
-soundaudit fix --apply --db ~/.local/share/soundaudit/scan.db
+soundaudit fix --apply
 
 # Resolve + write in one shot
-soundaudit resolve --auto-write --db ~/.local/share/soundaudit/scan.db
+soundaudit resolve --auto-write
 
 # Reports
 soundaudit report                              # summary
@@ -112,7 +115,15 @@ soundaudit scan ~/Music --hash-strategy full
 
 ## Configuration
 
-Create `config.yaml`:
+Create `config.yaml` in the current directory, or in your platform config folder:
+
+| OS | Config location |
+|----|----------------|
+| Linux | `~/.config/soundaudit/config.yaml` |
+| macOS | `~/Library/Application Support/soundaudit/config.yaml` |
+| Windows | `%APPDATA%\soundaudit\config.yaml` |
+
+Example `config.yaml`:
 
 ```yaml
 scan:
@@ -121,9 +132,6 @@ scan:
   extensions: [".flac", ".mp3", ".m4a"]
   workers: 4
   hash_strategy: head-only
-
-database:
-  path: ~/.local/share/soundaudit/scan.db
 
 fingerprinting:
   enabled: false
@@ -141,13 +149,15 @@ soundaudit scan --config config.yaml
 soundaudit tui --config config.yaml
 ```
 
-## Docker
+### Platform Defaults
 
-```bash
-docker compose up --build
-```
+SoundAudit uses OS-appropriate default paths so you rarely need `--db` or `--config`:
 
-Mounts your Music folder and persists the database locally.
+| OS | Database | Logs |
+|----|----------|------|
+| Linux | `~/.local/share/soundaudit/scan.db` | `~/.local/share/soundaudit/soundaudit.log` |
+| macOS | `~/Library/Application Support/soundaudit/scan.db` | same dir |
+| Windows | `%LOCALAPPDATA%\soundaudit\scan.db` | same dir |
 
 ## Architecture
 
