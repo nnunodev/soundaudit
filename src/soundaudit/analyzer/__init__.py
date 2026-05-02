@@ -2,7 +2,6 @@
 
 from soundaudit.analyzer.acoustid import (
     AcoustidDuplicateAnalyzer,
-    AcoustidFileVerdict,
     AcoustidGroupVerdict,
     DupType,
     analyze_acoustid_keepers,
@@ -18,7 +17,6 @@ from soundaudit.analyzer.duplicates import (
 
 __all__ = [
     "AcoustidDuplicateAnalyzer",
-    "AcoustidFileVerdict",
     "AcoustidGroupVerdict",
     "DupType",
     "analyze_acoustid_keepers",

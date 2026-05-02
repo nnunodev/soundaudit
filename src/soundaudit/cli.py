@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import sys
+import contextlib
+import logging
 from datetime import datetime
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
@@ -18,10 +20,8 @@ from soundaudit.actuator.tags import (
     snapshot_tags,
     write_tags,
 )
-from soundaudit.analyzer.transcode import analyze_library_transcodes
 from soundaudit.analyzer.acoustid import (
     AcoustidDuplicateAnalyzer,
-    AcoustidGroupVerdict,
     DupType,
     analyze_acoustid_keepers,
 )
@@ -31,11 +31,13 @@ from soundaudit.analyzer.duplicates import (
     KeeperVerdict,
     analyze_keepers,
 )
+from soundaudit.analyzer.transcode import analyze_library_transcodes
 from soundaudit.config import AppConfig
 from soundaudit.db.store import AcoustidGroup, Database
-from soundaudit.models import HashStrategy, TrackTags
-from soundaudit.reporter import ReportExporter, infer_format, MarkdownSection
-from soundaudit.scanner.walker import scan_directory
+from soundaudit.models import HashStrategy
+from soundaudit.reporter import MarkdownSection, ReportExporter, infer_format
+from soundaudit.resolver.musicbrainz import ResolvedMetadata
+from soundaudit.scanner.walker import _shutdown, scan_directory
 from soundaudit.tui import SoundAuditApp
 
 app = typer.Typer(
@@ -47,15 +49,38 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def main_callback(
+    verbose: int = typer.Option(0, "--verbose", "-v", count=True, help="Increase verbosity (-v, -vv)"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress non-error output"),
+) -> None:
+    """Global options."""
+    if quiet:
+        level = logging.ERROR
+    elif verbose == 1:
+        level = logging.INFO
+    elif verbose >= 2:
+        level = logging.DEBUG
+    else:
+        level = logging.WARNING
+
+    logging.basicConfig(
+        level=level,
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler(console=console, rich_tracebacks=True, show_time=False)],
+    )
+
+
 def _load_config(config_path: Path | None) -> AppConfig:
     if config_path and config_path.exists():
         return AppConfig.from_yaml(config_path)
-    return AppConfig()
+    return AppConfig.from_yaml()
 
 
 @app.command("scan")
 def scan_cmd(
-    paths: list[str] = typer.Argument(..., help="Directories to scan"),
+    paths: list[str] = typer.Argument(None, help="Directories to scan"),
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
     db: Path | None = typer.Option(None, "--db", help="SQLite database path"),
     workers: int = typer.Option(4, "--workers", "-j", help="Parallel workers", min=1, max=32),
@@ -69,6 +94,11 @@ def scan_cmd(
 ) -> None:
     """Scan audio files and store metadata in the database."""
     cfg = _load_config(config)
+    if not paths:
+        paths = cfg.scan.paths
+    if not paths:
+        console.print("[red]No scan paths provided. Pass directories as arguments or set scan.paths in config.yaml.[/red]")
+        raise typer.Exit(1)
     if db:
         cfg.database.path = str(db)
     cfg.scan.workers = workers
@@ -76,14 +106,13 @@ def scan_cmd(
         cfg.scan.hash_strategy = HashStrategy(hash_strategy)
     except ValueError:
         console.print(f"[red]Invalid hash strategy: {hash_strategy}. Use: head-only, head-tail, full, none[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     cfg.fingerprinting.enabled = fingerprint
 
     database = Database(str(cfg.database.resolved()))
     existing = database.get_existing_paths()
 
     total_new = 0
-    total_skipped = 0
 
     with Progress(
         SpinnerColumn(),
@@ -91,6 +120,8 @@ def scan_cmd(
         console=console,
     ) as progress:
         for root_path in paths:
+            if _shutdown.is_set():
+                break
             root = Path(root_path).expanduser().resolve()
             if not root.exists():
                 console.print(f"[red]Path does not exist: {root}[/red]")
@@ -109,6 +140,8 @@ def scan_cmd(
                 fingerprint=cfg.fingerprinting.enabled,
                 fpcalc_path=cfg.fingerprinting.fpcalc_path,
             ):
+                if _shutdown.is_set():
+                    break
                 database.upsert_file(info)
                 count += 1
                 total_new += 1
@@ -116,8 +149,11 @@ def scan_cmd(
             console.print(f"  [green]{count} files scanned[/green]")
 
     console.print(f"\n[bold]Done.[/bold] {total_new} files scanned. Database: {cfg.database.path}")
+    if _shutdown.is_set():
+        console.print("[yellow]Scan was interrupted. Partial results saved.[/yellow]")
+        raise typer.Exit(130)
 
-    if analyze_duplicates:
+    if analyze_duplicates and not _shutdown.is_set():
         DuplicateAnalyzer(database, console=console).run()
 
 
@@ -159,6 +195,7 @@ def _report_summary(
     out_format: str = "console",
 ) -> None:
     from sqlalchemy import func
+
     from soundaudit.db.store import DBFile, DuplicateGroup
 
     with database.session() as s:
@@ -551,11 +588,11 @@ def fix_cmd(
         selected_fields = validate_fields(selected_fields)
     except Exception as exc:
         console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
 
     if source != "musicbrainz":
         console.print(f"[red]Unknown source: {source}. Only 'musicbrainz' is supported.[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     if not apply and not cfg.actuator.dry_run:
         # If --apply not given but config says dry_run=False, still require --apply for safety
@@ -619,10 +656,8 @@ def fix_cmd(
         if not changes:
             skipped += 1
             if not dry_run:
-                try:
+                with contextlib.suppress(Exception):
                     database.save_written_tags(db_file.id, tags, selected_fields)
-                except Exception:
-                    pass
             continue
 
         for field, old_val, new_val in changes:
@@ -649,8 +684,8 @@ def fix_cmd(
 
 def _auto_write_tags(
     database: Database,
-    results: list[tuple[int, object]],
-    fields: set[str],
+    results: list[tuple[int, ResolvedMetadata]],
+    fields: set[str] | None,
     backup: bool = True,
 ) -> None:
     """Write MusicBrainz-resolved tags back to files."""
@@ -937,7 +972,7 @@ def _report_duplicates(
             f"[bold]{len(files)} files[/bold]",
             "",
             _human_size(verdict.wasted_bytes),
-            f"[yellow]wasted[/yellow]",
+            "[yellow]wasted[/yellow]",
             end_section=True,
         )
 
@@ -1037,7 +1072,7 @@ def _report_acoustid_duplicates(
                 "group_id": db_group.id,
                 "path": f.path,
                 "verdict": fv.verdict.value,
-                "dup_type": fv.dup_type.value,
+                "dup_type": fv.dup_type,
                 "score": round(fv.score, 1),
                 "reasons": ", ".join(fv.reasons),
                 "album": f.album or "",
@@ -1049,7 +1084,7 @@ def _report_acoustid_duplicates(
             })
             md_rows.append([
                 fv.verdict.value,
-                fv.dup_type.value,
+                fv.dup_type,
                 str(Path(f.path).name),
                 f.album or "—",
                 " ".join(fv.reasons[:3]),
@@ -1131,7 +1166,7 @@ def _report_acoustid_duplicates(
         )
         verdict = analyze_acoustid_keepers(group_result)
 
-        bfb_count = sum(1 for v in verdict.file_verdicts if v.dup_type == DupType.BIT_FOR_BIT)
+        bfb_count = sum(1 for v in verdict.file_verdicts if v.dup_type == DupType.BIT_FOR_BIT.value)
         trans_count = len(verdict.file_verdicts) - bfb_count
         dup_summary = []
         if bfb_count > 1:
@@ -1161,13 +1196,13 @@ def _report_acoustid_duplicates(
             why = ", ".join(fv.reasons[:3])
 
             type_style = {
-                DupType.BIT_FOR_BIT: "[green]",
-                DupType.TRANSCODE: "[yellow]",
+                DupType.BIT_FOR_BIT.value: "[green]",
+                DupType.TRANSCODE.value: "[yellow]",
             }[fv.dup_type]
 
             table.add_row(
                 f"{style}{fv.verdict.value}[/]",
-                f"{type_style}{fv.dup_type.value}[/]",
+                f"{type_style}{fv.dup_type}[/]",
                 path,
                 album,
                 why,

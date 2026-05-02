@@ -15,7 +15,7 @@ from soundaudit.analyzer.duplicates import (
     find_duplicate_groups,
     write_duplicate_groups,
 )
-from soundaudit.db.store import DBFile, Database, DuplicateGroup
+from soundaudit.db.store import Database, DBFile, DuplicateGroup
 
 
 @pytest.fixture

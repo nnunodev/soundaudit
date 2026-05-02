@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict
+import contextlib
 from pathlib import Path
-from typing import Optional
 
 from mutagen import MutagenError
 from mutagen.apev2 import APEv2File
 from mutagen.flac import FLAC
 from mutagen.id3 import (  # type: ignore[attr-defined]
-    ID3,
     TALB,
     TCON,
     TDRC,
@@ -122,7 +119,7 @@ def _snapshot_flac_ogg(audio: FLAC | OggVorbis) -> dict[str, str | int | None]:
 
 def _snapshot_mp3(audio: MP3) -> dict[str, str | int | None]:
     if audio.tags is None:
-        return {f: None for f in _VALID_FIELDS}
+        return dict.fromkeys(_VALID_FIELDS)
     tags = audio.tags
 
     def _text(frame_id: str) -> str | None:
@@ -135,27 +132,19 @@ def _snapshot_mp3(audio: MP3) -> dict[str, str | int | None]:
     track_num, track_total = None, None
     if track_text:
         parts = track_text.split("/")
-        try:
+        with contextlib.suppress(ValueError):
             track_num = int(parts[0])
-        except ValueError:
-            pass
-        try:
+        with contextlib.suppress(ValueError):
             track_total = int(parts[1]) if len(parts) > 1 else None
-        except ValueError:
-            pass
 
     disc_text = _text("TPOS")
     disc_num, disc_total = None, None
     if disc_text:
         parts = disc_text.split("/")
-        try:
+        with contextlib.suppress(ValueError):
             disc_num = int(parts[0])
-        except ValueError:
-            pass
-        try:
+        with contextlib.suppress(ValueError):
             disc_total = int(parts[1]) if len(parts) > 1 else None
-        except ValueError:
-            pass
 
     year_raw = _text("TDRC") or _text("TYER")
     year: int | str | None = None
@@ -200,10 +189,8 @@ def _snapshot_mp4(audio: MP4) -> dict[str, str | int | None]:
     year_raw = _get("\xa9day")
     year: int | None = None
     if year_raw:
-        try:
+        with contextlib.suppress(ValueError):
             year = int(str(year_raw)[:4])
-        except ValueError:
-            pass
 
     return {
         "title": _get("\xa9nam"),
@@ -229,35 +216,25 @@ def _snapshot_ape(audio: APEv2File) -> dict[str, str | int | None]:
     track_num, track_total = None, None
     if track_text:
         parts = track_text.split("/")
-        try:
+        with contextlib.suppress(ValueError):
             track_num = int(parts[0])
-        except ValueError:
-            pass
-        try:
+        with contextlib.suppress(ValueError):
             track_total = int(parts[1]) if len(parts) > 1 else None
-        except ValueError:
-            pass
 
     disc_text = _get("Disc")
     disc_num, disc_total = None, None
     if disc_text:
         parts = disc_text.split("/")
-        try:
+        with contextlib.suppress(ValueError):
             disc_num = int(parts[0])
-        except ValueError:
-            pass
-        try:
+        with contextlib.suppress(ValueError):
             disc_total = int(parts[1]) if len(parts) > 1 else None
-        except ValueError:
-            pass
 
     year_raw = _get("Year")
     year: int | None = None
     if year_raw:
-        try:
+        with contextlib.suppress(ValueError):
             year = int(str(year_raw)[:4])
-        except ValueError:
-            pass
 
     return {
         "title": _get("Title"),
@@ -534,7 +511,7 @@ def _write_wave(audio: WAVE, tags: TrackTags, fields: set[str]) -> None:
 def write_tags(
     path: Path,
     tags: TrackTags,
-    fields: Optional[set[str]] = None,
+    fields: set[str] | None = None,
     backup: bool = True,
 ) -> dict[str, str | int | None]:
     """Write tags to *path* and return the backup snapshot.

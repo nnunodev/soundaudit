@@ -8,14 +8,13 @@ from mutagen import MutagenError
 from mutagen.aac import AAC
 from mutagen.aiff import AIFF
 from mutagen.apev2 import APEv2File
-from mutagen.flac import FLAC, Picture
+from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
 from mutagen.oggvorbis import OggVorbis
 from mutagen.wave import WAVE
 
 from soundaudit.models import AudioFormat, AudioSignature, FileInfo, HashStrategy, TrackTags
-
 
 try:
     import xxhash

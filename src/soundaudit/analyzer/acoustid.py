@@ -11,30 +11,23 @@ from dataclasses import dataclass
 from enum import Enum
 
 from rich.console import Console
-from rich.text import Text
 from sqlalchemy import func
 
 from soundaudit.analyzer.duplicates import (
     DuplicateGroupResult,
     FileVerdict,
     GroupVerdict,
-    KeeperVerdict,
     _human_size,
+)
+from soundaudit.analyzer.duplicates import (
     analyze_keepers as _analyze_keepers,
 )
-from soundaudit.db.store import DBFile, AcoustidGroup
+from soundaudit.db.store import AcoustidGroup, DBFile
 
 
 class DupType(str, Enum):
     BIT_FOR_BIT = "bit-for-bit"
     TRANSCODE = "transcode"
-
-
-@dataclass
-class AcoustidFileVerdict(FileVerdict):
-    """Extended verdict with transcode vs bit-for-bit flag."""
-
-    dup_type: DupType = DupType.TRANSCODE
 
 
 @dataclass
@@ -44,12 +37,12 @@ class AcoustidGroupVerdict(GroupVerdict):
     fingerprint: str = ""
 
     @property
-    def bit_for_bit_files(self) -> list[AcoustidFileVerdict]:
-        return [v for v in self.file_verdicts if v.dup_type == DupType.BIT_FOR_BIT]
+    def bit_for_bit_files(self) -> list[FileVerdict]:
+        return [v for v in self.file_verdicts if v.dup_type == DupType.BIT_FOR_BIT.value]
 
     @property
-    def transcode_files(self) -> list[AcoustidFileVerdict]:
-        return [v for v in self.file_verdicts if v.dup_type == DupType.TRANSCODE]
+    def transcode_files(self) -> list[FileVerdict]:
+        return [v for v in self.file_verdicts if v.dup_type == DupType.TRANSCODE.value]
 
 
 def find_acoustid_groups(database) -> list[DuplicateGroupResult]:
@@ -145,7 +138,7 @@ def analyze_acoustid_keepers(group: DuplicateGroupResult) -> AcoustidGroupVerdic
     base = _analyze_keepers(group)
     dup_types = _classify_dup_type(group.files)
 
-    file_verdicts: list[AcoustidFileVerdict] = []
+    file_verdicts: list[FileVerdict] = []
     for fv in base.file_verdicts:
         dt = dup_types.get(fv.db_file.id, DupType.TRANSCODE)
         reasons = list(fv.reasons)
@@ -154,18 +147,18 @@ def analyze_acoustid_keepers(group: DuplicateGroupResult) -> AcoustidGroupVerdic
         else:
             reasons.append("transcode")
         file_verdicts.append(
-            AcoustidFileVerdict(
+            FileVerdict(
                 db_file=fv.db_file,
                 score=fv.score,
                 verdict=fv.verdict,
                 reasons=reasons,
-                dup_type=dt,
+                dup_type=dt.value,
             )
         )
 
     return AcoustidGroupVerdict(
         group=base.group,
-        file_verdicts=file_verdicts,  # type: ignore[arg-type]
+        file_verdicts=file_verdicts,
         fingerprint=group.content_hash,
     )
 

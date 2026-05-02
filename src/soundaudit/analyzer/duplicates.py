@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 
 from rich.console import Console
-from rich.text import Text
 from sqlalchemy import func
 
 from soundaudit.db.store import DBFile, DuplicateGroup
@@ -27,6 +26,7 @@ class FileVerdict:
     score: float
     verdict: KeeperVerdict
     reasons: list[str]
+    dup_type: str = ""
 
     @property
     def tech_summary(self) -> str:
@@ -82,7 +82,6 @@ class GroupVerdict:
         return sum(v.db_file.size_bytes for v in self.deletions)
 
 
-import os
 
 
 def find_duplicate_groups(database) -> list[DuplicateGroupResult]:

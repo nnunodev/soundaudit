@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import os
+import signal
+import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from pathlib import Path
 
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress
 
 from soundaudit.models import FileInfo, HashStrategy
 from soundaudit.scanner.extractor import extract_file_info
 
-
 DEFAULT_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv"}
+
+_shutdown = threading.Event()
+
+
+def _handle_sigint(signum: int, frame: object) -> None:
+    _shutdown.set()
+
+
+signal.signal(signal.SIGINT, _handle_sigint)
 
 
 def discover_files(root: Path, extensions: set[str]) -> Iterator[Path]:
@@ -36,7 +45,7 @@ def scan_directory(
     *,
     extensions: set[str] | None = None,
     workers: int = 4,
-    existing: dict[str, str] | None = None,
+    existing: dict[str, float] | None = None,
     progress: Progress | None = None,
     hash_strategy: HashStrategy = HashStrategy.HEAD_ONLY,
     fingerprint: bool = False,
@@ -53,8 +62,8 @@ def scan_directory(
     files_to_scan: list[Path] = []
     skipped = 0
     for p in all_files:
-        mtime = datetime.fromtimestamp(p.stat().st_mtime).isoformat()
-        if str(p) in existing and existing[str(p)] == mtime:
+        file_mtime = p.stat().st_mtime
+        if str(p) in existing and abs(file_mtime - existing[str(p)]) <= 1.0:
             skipped += 1
             continue
         files_to_scan.append(p)
@@ -70,6 +79,8 @@ def scan_directory(
         task_id = progress.add_task("Scanning...", total=len(files_to_scan))
 
     def process(p: Path) -> FileInfo | None:
+        if _shutdown.is_set():
+            return None
         try:
             info = extract_file_info(
                 p,
@@ -86,8 +97,12 @@ def scan_directory(
     # Parallel extraction -- network-latency on CIFS hides thread overhead
     with ThreadPoolExecutor(max_workers=min(workers, 16)) as pool:
         for info in pool.map(process, files_to_scan):
+            if _shutdown.is_set():
+                break
             if info is not None:
                 yield info
 
     if progress and task_id is not None:
         progress.remove_task(task_id)
+    if _shutdown.is_set():
+        progress.console.print("[yellow]Scan interrupted by user.[/yellow]") if progress else None

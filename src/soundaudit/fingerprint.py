@@ -6,12 +6,12 @@ whichever is available), then falls back to calling fpcalc directly.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from rich.console import Console
 
@@ -23,7 +23,7 @@ class FingerprintResult:
 
 
 # Optional backends
-_pyacoustid: Optional[object] = None
+_pyacoustid: object | None = None
 try:
     import acoustid  # type: ignore[import-untyped]
 
@@ -37,7 +37,7 @@ def fingerprint_file(
     *,
     fpcalc_path: str = "/usr/bin/fpcalc",
     console: Console | None = None,
-) -> Optional[FingerprintResult]:
+) -> FingerprintResult | None:
     """Generate a chromaprint fingerprint for an audio file.
 
     Returns ``FingerprintResult`` or ``None`` on failure.
@@ -53,7 +53,7 @@ def _fp_with_pyacoustid(
     path: Path,
     *,
     console: Console | None = None,
-) -> Optional[FingerprintResult]:
+) -> FingerprintResult | None:
     try:
         duration, fp = _pyacoustid.fingerprint_file(str(path))  # type: ignore[union-attr]
         return FingerprintResult(
@@ -71,7 +71,7 @@ def _fp_with_fpcalc(
     fpcalc_path: str,
     *,
     console: Console | None = None,
-) -> Optional[FingerprintResult]:
+) -> FingerprintResult | None:
     """Call the fpcalc binary directly.
 
     Tries JSON mode first, then plain text fallback.
@@ -105,13 +105,11 @@ def _fp_with_fpcalc(
                     )
                 # plain text: DURATION=123\nFINGERPRINT=AQAD...
                 duration = 0
-                fingerprint: Optional[str] = None
+                fingerprint: str | None = None
                 for line in output.splitlines():
                     if line.startswith("DURATION="):
-                        try:
+                        with contextlib.suppress(ValueError):
                             duration = int(float(line.split("=", 1)[1]))
-                        except ValueError:
-                            pass
                     elif line.startswith("FINGERPRINT="):
                         fingerprint = line.split("=", 1)[1]
                 if fingerprint:

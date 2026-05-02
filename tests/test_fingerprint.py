@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from soundaudit.fingerprint import FingerprintResult, _fp_with_fpcalc, fingerprint_available, fingerprint_file
+from soundaudit.fingerprint import (
+    _fp_with_fpcalc,
+    fingerprint_available,
+)
 
 
 class TestFingerprintAvailable:

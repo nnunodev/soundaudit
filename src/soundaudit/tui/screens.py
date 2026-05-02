@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.message import Message
@@ -18,7 +19,6 @@ from textual.widgets import (
     Footer,
     Header,
     Input,
-    Label,
     Log,
     ProgressBar,
     Static,
@@ -27,7 +27,6 @@ from textual.widgets import (
 from soundaudit._version import __version__
 from soundaudit.analyzer.acoustid import (
     AcoustidDuplicateAnalyzer,
-    AcoustidGroupVerdict,
     DupType,
     analyze_acoustid_keepers,
     find_acoustid_groups,
@@ -267,7 +266,9 @@ class DashboardScreen(Screen[None]):
             stats_widget.update("\n".join(lines))
             # highlight first nav item on stats load
             self.query_one(f"#{self._nav_sel()}", Static).add_class("focused-nav")
-        except Exception:
+        except Exception as exc:
+            import logging
+            logging.getLogger("soundaudit.tui").warning("Dashboard stats load failed: %s", exc, exc_info=True)
             stats_widget.update("[red]Error loading database stats.[/red]")
 
     def on_click(self, event) -> None:
@@ -2116,206 +2117,6 @@ class AnalyzerRunScreen(Screen[None]):
 
     def action_quit(self) -> None:
         self.app.exit()
-
-
-class FixTagsScreen(Screen[None]):
-    """Choose which fields to write and run tag fixer."""
-
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
-        ("q", "quit", "Quit"),
-        ("escape", "cancel", "Back"),
-    ]
-
-    OPTION_IDS: ClassVar[list[str]] = [
-        "fld-title", "fld-artist", "fld-album", "fld-album_artist",
-        "fld-year", "fld-genre", "fld-track_number", "fld-track_total",
-        "fld-disc_number", "fld-disc_total", "fld-isrc",
-        "opt-dryrun", "opt-backup", "btn-run", "btn-back",
-    ]
-
-    FIELD_MAP: ClassVar[dict[str, str]] = {
-        "fld-title": "title",
-        "fld-artist": "artist",
-        "fld-album": "album",
-        "fld-album_artist": "album_artist",
-        "fld-year": "year",
-        "fld-genre": "genre",
-        "fld-track_number": "track_number",
-        "fld-track_total": "track_total",
-        "fld-disc_number": "disc_number",
-        "fld-disc_total": "disc_total",
-        "fld-isrc": "isrc",
-    }
-
-    def compose(self) -> ComposeResult:
-        yield Header()
-        with Container(id="scan-screen"):
-            yield Static("[b]Fix Tags[/b]  [dim]esc = back[/dim]", id="scan-title")
-            yield Static("[dim]Toggle fields to update from MusicBrainz data[/dim]", id="path-label")
-            yield Static("Files with resolved data: —", id="fix-count")
-            with Vertical(id="path-list"):
-                for oid, label in [
-                    ("fld-title", "Title"),
-                    ("fld-artist", "Artist"),
-                    ("fld-album", "Album"),
-                    ("fld-album_artist", "Album Artist"),
-                    ("fld-year", "Year"),
-                    ("fld-genre", "Genre"),
-                    ("fld-track_number", "Track Number"),
-                    ("fld-track_total", "Track Total"),
-                    ("fld-disc_number", "Disc Number"),
-                    ("fld-disc_total", "Disc Total"),
-                    ("fld-isrc", "ISRC"),
-                ]:
-                    yield Static(
-                        f"[green]✓[/green] {label}",
-                        id=oid,
-                        classes="path-item checked nav-item",
-                    )
-                yield Static("", id="sep-fix")
-                yield Static(
-                    "[green]✓[/green] Dry-run  [dim]preview only[/dim]",
-                    id="opt-dryrun",
-                    classes="path-item checked nav-item",
-                )
-                yield Static(
-                    "[green]✓[/green] Backup   [dim]save originals to DB[/dim]",
-                    id="opt-backup",
-                    classes="path-item checked nav-item",
-                )
-            with Horizontal(id="scan-actions"):
-                yield Static("Run", id="btn-run", classes="scan-link")
-                yield Static("Back", id="btn-back", classes="scan-link")
-        yield Footer()
-
-    def on_mount(self) -> None:
-        self._opt_selected: dict[str, bool] = {
-            **{oid: True for oid in self.FIELD_MAP},
-            "opt-dryrun": True,
-            "opt-backup": True,
-        }
-        self._opt_focus_idx: int = 0
-        self._focus_group: str = "options"
-        self._draw_focus()
-        self._refresh_count()
-
-    def _refresh_count(self) -> None:
-        app = self.app  # type: ignore[attr-defined]
-        try:
-            db = Database(app.get_db_path())
-            from sqlalchemy import func
-            from soundaudit.db.store import DBFile
-            with db.session() as s:
-                count = (
-                    s.query(func.count(DBFile.id))
-                    .filter(DBFile.mb_recording_id.is_not(None))
-                    .scalar()
-                    or 0
-                )
-            self.query_one("#fix-count", Static).update(
-                f"Files with resolved data: [b]{count:,}[/b]"
-            )
-        except Exception:
-            self.query_one("#fix-count", Static).update(
-                "Files with resolved data: [red]—[/red]"
-            )
-
-    def _draw_focus(self) -> None:
-        for oid in self.OPTION_IDS:
-            self.query_one(f"#{oid}", Static).remove_class("focused-nav")
-        oid = self.OPTION_IDS[self._opt_focus_idx]
-        self.query_one(f"#{oid}", Static).add_class("focused-nav")
-
-    def _toggle_option(self, oid: str) -> None:
-        was = self._opt_selected[oid]
-        self._opt_selected[oid] = not was
-        checked = self._opt_selected[oid]
-        node = self.query_one(f"#{oid}", Static)
-        label = {
-            "fld-title": "Title",
-            "fld-artist": "Artist",
-            "fld-album": "Album",
-            "fld-album_artist": "Album Artist",
-            "fld-year": "Year",
-            "fld-genre": "Genre",
-            "fld-track_number": "Track Number",
-            "fld-track_total": "Track Total",
-            "fld-disc_number": "Disc Number",
-            "fld-disc_total": "Disc Total",
-            "fld-isrc": "ISRC",
-            "opt-dryrun": "Dry-run  [dim]preview only[/dim]",
-            "opt-backup": "Backup   [dim]save originals to DB[/dim]",
-        }.get(oid, "")
-        if checked:
-            node.update(f"[green]✓[/green] {label}")
-            node.add_class("checked")
-            node.remove_class("unchecked")
-        else:
-            node.update(f"[red]✗[/red] {label}")
-            node.remove_class("checked")
-            node.add_class("unchecked")
-
-    def on_key(self, event) -> None:
-        key = event.key
-        if key in ("up", "k"):
-            self._opt_focus_idx = max(0, self._opt_focus_idx - 1)
-            self._focus_group = "options"
-            self._draw_focus()
-            event.stop()
-        elif key in ("down", "j"):
-            self._opt_focus_idx = min(len(self.OPTION_IDS) - 1, self._opt_focus_idx + 1)
-            self._focus_group = "options"
-            self._draw_focus()
-            event.stop()
-        elif key in ("enter", "space"):
-            oid = self.OPTION_IDS[self._opt_focus_idx]
-            if oid in ("btn-run", "btn-back"):
-                if oid == "btn-run":
-                    self._run_fix()
-                else:
-                    self.app.pop_screen()
-            else:
-                self._toggle_option(oid)
-            event.stop()
-        elif key in ("escape", "q"):
-            self.app.pop_screen()
-            event.stop()
-
-    def on_click(self, event) -> None:
-        widget_id = getattr(getattr(event, "control", None), "id", None)
-        if widget_id in self.FIELD_MAP or widget_id in ("opt-dryrun", "opt-backup"):
-            self._toggle_option(widget_id)
-        elif widget_id == "btn-run":
-            self._run_fix()
-        elif widget_id == "btn-back":
-            self.app.pop_screen()
-
-    def _run_fix(self) -> None:
-        selected_paths = [
-            self._path_map[pid][0]
-            for pid, sel in self._path_selected.items()
-            if sel
-        ]
-        if not selected_paths:
-            self.notify("No paths selected.", severity="warning", timeout=3)
-            return
-        preset = getattr(self, "_selected_preset", "preset-core")
-        preset_fields = {
-            "preset-core": {"title", "artist", "album", "year"},
-            "preset-full": {"title", "artist", "album", "year", "album_artist", "track_number", "track_total", "disc_number", "disc_total"},
-            "preset-all": {"title", "artist", "album", "year", "album_artist", "track_number", "track_total", "disc_number", "disc_total", "genre", "isrc"},
-        }
-        fields = preset_fields.get(preset, preset_fields["preset-core"])
-        try:
-            fields = validate_fields(fields)
-        except TagWriteError as exc:
-            self.notify(str(exc), severity="error", timeout=3)
-            return
-        dry_run = self._opt_selected.get("opt-dryrun", True)
-        backup = self._opt_selected.get("opt-backup", True)
-        self.app.push_screen(
-            FixTagsRunScreen(fields, selected_paths=selected_paths, dry_run=dry_run, backup=backup)
-        )
 
 
 class FixTagsScreen(Screen[None]):

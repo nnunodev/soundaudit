@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from soundaudit.analyzer.transcode import (
-    SILENCE_THRESHOLD_DB,
     SpectralResult,
     _interpret_spectrum,
     _parse_volume,
     analyze_file,
     analyze_library_transcodes,
 )
-from soundaudit.db.store import DBFile, Database
+from soundaudit.db.store import Database, DBFile
 
 
 @pytest.fixture
@@ -89,15 +88,7 @@ class TestInterpretSpectrum:
 
 class TestAnalyzeFile:
     def test_skips_non_lossless(self) -> None:
-        from soundaudit.models import AudioFormat, FileInfo, TrackTags
-        info = FileInfo(
-            path=Path("/a/1.mp3"),
-            size_bytes=1,
-            mtime_ns=0,
-            format=AudioFormat.MP3,
-            lossless=False,
-            tags=TrackTags(),
-        )
+
         # analyze_file is path-based; just pass a nonexistent path
         # and verify it tries ffmpeg (which we mock to return silence)
         with patch(
@@ -132,7 +123,7 @@ class TestAnalyzeFile:
             return -40.0
 
         with patch("soundaudit.analyzer.transcode._ffmpeg_volume_above", side_effect=fake_ffmpeg):
-            res = analyze_file("/a/1.flac", sample_rate_hz=44100, probed_duration=10.0)
+            analyze_file("/a/1.flac", sample_rate_hz=44100, probed_duration=10.0)
 
         # 1 offset × 4 bands = 4 calls
         assert call_count == 4

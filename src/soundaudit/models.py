@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
-from typing import Optional
 
 
 class AudioFormat(Enum):
@@ -38,39 +37,39 @@ class AudioSignature:
 
     content_hash: str
     hash_algo: str = "xxhash3_64"
-    acoustid_fingerprint: Optional[str] = None
-    acoustid_duration_ms: Optional[int] = None
-    chromaprint: Optional[str] = None
+    acoustid_fingerprint: str | None = None
+    acoustid_duration_ms: int | None = None
+    chromaprint: str | None = None
 
 
 @dataclass(slots=True)
 class TrackTags:
     """All tag fields we care about."""
 
-    title: Optional[str] = None
-    artist: Optional[str] = None
-    album: Optional[str] = None
-    album_artist: Optional[str] = None
-    track_number: Optional[int] = None
-    track_total: Optional[int] = None
-    disc_number: Optional[int] = None
-    disc_total: Optional[int] = None
-    year: Optional[int] = None
-    genre: Optional[str] = None
-    isrc: Optional[str] = None
-    comment: Optional[str] = None
-    lyrics: Optional[str] = None
-    publisher: Optional[str] = None
-    composer: Optional[str] = None
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    album_artist: str | None = None
+    track_number: int | None = None
+    track_total: int | None = None
+    disc_number: int | None = None
+    disc_total: int | None = None
+    year: int | None = None
+    genre: str | None = None
+    isrc: str | None = None
+    comment: str | None = None
+    lyrics: str | None = None
+    publisher: str | None = None
+    composer: str | None = None
     # ReplayGain
-    replaygain_track_gain: Optional[float] = None
-    replaygain_track_peak: Optional[float] = None
-    replaygain_album_gain: Optional[float] = None
-    replaygain_album_peak: Optional[float] = None
+    replaygain_track_gain: float | None = None
+    replaygain_track_peak: float | None = None
+    replaygain_album_gain: float | None = None
+    replaygain_album_peak: float | None = None
     # Embedded cover info
-    cover_mime_type: Optional[str] = None
-    cover_size_bytes: Optional[int] = None
-    cover_dimensions: Optional[tuple[int, int]] = None
+    cover_mime_type: str | None = None
+    cover_size_bytes: int | None = None
+    cover_dimensions: tuple[int, int] | None = None
 
     def required_missing(self) -> list[str]:
         """Fields that should be present but aren't."""
@@ -102,38 +101,38 @@ class FileInfo:
     path: Path
     size_bytes: int
     mtime_ns: int
-    inode: Optional[int] = None
+    inode: int | None = None
 
     # Format / codec
     format: AudioFormat = AudioFormat.UNKNOWN
-    sample_rate_hz: Optional[int] = None
-    bit_depth: Optional[int] = None
-    channels: Optional[int] = None
-    bitrate_kbps: Optional[float] = None
-    duration_seconds: Optional[float] = None
+    sample_rate_hz: int | None = None
+    bit_depth: int | None = None
+    channels: int | None = None
+    bitrate_kbps: float | None = None
+    duration_seconds: float | None = None
     lossless: bool = False
 
     # Tags
     tags: TrackTags = field(default_factory=TrackTags)
 
     # Content signature
-    signature: Optional[AudioSignature] = None
+    signature: AudioSignature | None = None
 
     # Scan tracking
-    first_seen: Optional[datetime] = None
-    last_scanned: Optional[datetime] = None
-    scan_id: Optional[int] = None
+    first_seen: datetime | None = None
+    last_scanned: datetime | None = None
+    scan_id: int | None = None
 
     # Analysis flags (populated by analyzers)
     is_corrupt: bool = False
     is_transcode: bool = False
     is_duplicate: bool = False
-    duplicate_group_id: Optional[int] = None
+    duplicate_group_id: int | None = None
     transcode_confidence: float = 0.0
-    corruption_reason: Optional[str] = None
+    corruption_reason: str | None = None
 
     @property
-    def primary_artist(self) -> Optional[str]:
+    def primary_artist(self) -> str | None:
         return self.tags.album_artist or self.tags.artist
 
     @property

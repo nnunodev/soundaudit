@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import weakref
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import (
-    Column,
     DateTime,
     Float,
-    ForeignKey,
     Integer,
-    LargeBinary,
     String,
     Text,
     create_engine,
@@ -22,9 +17,9 @@ from sqlalchemy import (
     inspect,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from soundaudit.models import AudioFormat, FileInfo, TrackTags
+from soundaudit.models import FileInfo, TrackTags
 
 
 class Base(DeclarativeBase):
@@ -38,81 +33,81 @@ _engine_refs: list[weakref.ref] = []
 class DBFile(Base):  # type: ignore[valid-type,misc]
     __tablename__ = "files"
 
-    id = Column(Integer, primary_key=True)
-    path = Column(String, unique=True, nullable=False, index=True)
-    size_bytes = Column(Integer, nullable=False)
-    mtime = Column(DateTime, nullable=False)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    path: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    mtime: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     # Format info
-    format = Column(String, nullable=False, default="UNKNOWN")
-    sample_rate_hz = Column(Integer)
-    bit_depth = Column(Integer)
-    channels = Column(Integer)
-    bitrate_kbps = Column(Float)
-    duration_seconds = Column(Float)
-    lossless = Column(Integer, default=0)  # SQLite bool
+    format: Mapped[str] = mapped_column(String, nullable=False, default="UNKNOWN")
+    sample_rate_hz: Mapped[int | None] = mapped_column(Integer)
+    bit_depth: Mapped[int | None] = mapped_column(Integer)
+    channels: Mapped[int | None] = mapped_column(Integer)
+    bitrate_kbps: Mapped[float | None] = mapped_column(Float)
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+    lossless: Mapped[int] = mapped_column(Integer, default=0)  # SQLite bool
 
     # Tags
-    title = Column(String)
-    artist = Column(String, index=True)
-    album = Column(String, index=True)
-    album_artist = Column(String, index=True)
-    track_number = Column(Integer)
-    track_total = Column(Integer)
-    disc_number = Column(Integer)
-    disc_total = Column(Integer)
-    year = Column(Integer)
-    genre = Column(String)
-    isrc = Column(String)
-    comment = Column(Text)
-    lyrics = Column(Text)
-    publisher = Column(String)
-    composer = Column(String)
-    replaygain_track_gain = Column(Float)
-    replaygain_track_peak = Column(Float)
-    replaygain_album_gain = Column(Float)
-    replaygain_album_peak = Column(Float)
-    cover_mime_type = Column(String)
-    cover_size = Column(Integer)
+    title: Mapped[str | None] = mapped_column(String)
+    artist: Mapped[str | None] = mapped_column(String, index=True)
+    album: Mapped[str | None] = mapped_column(String, index=True)
+    album_artist: Mapped[str | None] = mapped_column(String, index=True)
+    track_number: Mapped[int | None] = mapped_column(Integer)
+    track_total: Mapped[int | None] = mapped_column(Integer)
+    disc_number: Mapped[int | None] = mapped_column(Integer)
+    disc_total: Mapped[int | None] = mapped_column(Integer)
+    year: Mapped[int | None] = mapped_column(Integer)
+    genre: Mapped[str | None] = mapped_column(String)
+    isrc: Mapped[str | None] = mapped_column(String)
+    comment: Mapped[str | None] = mapped_column(Text)
+    lyrics: Mapped[str | None] = mapped_column(Text)
+    publisher: Mapped[str | None] = mapped_column(String)
+    composer: Mapped[str | None] = mapped_column(String)
+    replaygain_track_gain: Mapped[float | None] = mapped_column(Float)
+    replaygain_track_peak: Mapped[float | None] = mapped_column(Float)
+    replaygain_album_gain: Mapped[float | None] = mapped_column(Float)
+    replaygain_album_peak: Mapped[float | None] = mapped_column(Float)
+    cover_mime_type: Mapped[str | None] = mapped_column(String)
+    cover_size: Mapped[int | None] = mapped_column(Integer)
 
     # Signatures
-    content_hash = Column(String, index=True)
-    hash_algo = Column(String, default="xxhash3_64")
-    acoustid_fingerprint = Column(Text)
-    acoustid_duration_ms = Column(Integer)
+    content_hash: Mapped[str | None] = mapped_column(String, index=True)
+    hash_algo: Mapped[str | None] = mapped_column(String, default="xxhash3_64")
+    acoustid_fingerprint: Mapped[str | None] = mapped_column(Text)
+    acoustid_duration_ms: Mapped[int | None] = mapped_column(Integer)
 
     # Scan tracking
-    first_seen = Column(DateTime, default=datetime.utcnow)
-    last_scanned = Column(DateTime, default=datetime.utcnow)
-    scan_id = Column(Integer, default=0)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_scanned: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    scan_id: Mapped[int] = mapped_column(Integer, default=0)
 
     # Analysis flags
-    is_corrupt = Column(Integer, default=0)
-    is_transcode = Column(Integer, default=0)
-    transcode_confidence = Column(Float, default=0.0)
-    corruption_reason = Column(Text)
-    spectral_cutoff_hz = Column(Integer)
-    transcode_reason = Column(Text)
+    is_corrupt: Mapped[int] = mapped_column(Integer, default=0)
+    is_transcode: Mapped[int] = mapped_column(Integer, default=0)
+    transcode_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    corruption_reason: Mapped[str | None] = mapped_column(Text)
+    spectral_cutoff_hz: Mapped[int | None] = mapped_column(Integer)
+    transcode_reason: Mapped[str | None] = mapped_column(Text)
 
     # MusicBrainz resolution
-    mb_recording_id = Column(String, index=True)
-    mb_release_id = Column(String)
-    mb_track_id = Column(String)
-    mb_score = Column(Float, default=0.0)
-    mb_match_date = Column(DateTime)
-    mb_title = Column(String)
-    mb_artist = Column(String)
-    mb_album = Column(String)
-    mb_album_artist = Column(String)
-    mb_year = Column(Integer)
-    mb_genre = Column(String)
+    mb_recording_id: Mapped[str | None] = mapped_column(String, index=True)
+    mb_release_id: Mapped[str | None] = mapped_column(String)
+    mb_track_id: Mapped[str | None] = mapped_column(String)
+    mb_score: Mapped[float] = mapped_column(Float, default=0.0)
+    mb_match_date: Mapped[datetime | None] = mapped_column(DateTime)
+    mb_title: Mapped[str | None] = mapped_column(String)
+    mb_artist: Mapped[str | None] = mapped_column(String)
+    mb_album: Mapped[str | None] = mapped_column(String)
+    mb_album_artist: Mapped[str | None] = mapped_column(String)
+    mb_year: Mapped[int | None] = mapped_column(Integer)
+    mb_genre: Mapped[str | None] = mapped_column(String)
 
-    duplicate_group_id = Column(Integer)
-    acoustid_group_id = Column(Integer, index=True)
+    duplicate_group_id: Mapped[int | None] = mapped_column(Integer)
+    acoustid_group_id: Mapped[int | None] = mapped_column(Integer, index=True)
 
     # Phase 4 — tag writeback backup
-    tag_backup_json = Column(Text)
-    tag_fix_date = Column(DateTime)
+    tag_backup_json: Mapped[str | None] = mapped_column(Text)
+    tag_fix_date: Mapped[datetime | None] = mapped_column(DateTime)
 
     def __repr__(self) -> str:
         return f"<DBFile {self.path}>"
@@ -121,10 +116,10 @@ class DBFile(Base):  # type: ignore[valid-type,misc]
 class DuplicateGroup(Base):  # type: ignore[valid-type,misc]
     __tablename__ = "duplicate_groups"
 
-    id = Column(Integer, primary_key=True)
-    acoustid = Column(String, index=True)
-    group_type = Column(String, default="content_hash")
-    created = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    acoustid: Mapped[str | None] = mapped_column(String, index=True)
+    group_type: Mapped[str] = mapped_column(String, default="content_hash")
+    created: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class AcoustidGroup(Base):  # type: ignore[valid-type,misc]
@@ -132,24 +127,26 @@ class AcoustidGroup(Base):  # type: ignore[valid-type,misc]
 
     __tablename__ = "acoustid_groups"
 
-    id = Column(Integer, primary_key=True)
-    fingerprint = Column(String, index=True, nullable=False)
-    created = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    created: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class ScanHistory(Base):  # type: ignore[valid-type,misc]
     __tablename__ = "scan_history"
 
-    id = Column(Integer, primary_key=True)
-    started = Column(DateTime, default=datetime.utcnow)
-    finished = Column(DateTime)
-    files_found = Column(Integer, default=0)
-    files_changed = Column(Integer, default=0)
-    duration_seconds = Column(Float)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    started: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    finished: Mapped[datetime | None] = mapped_column(DateTime)
+    files_found: Mapped[int] = mapped_column(Integer, default=0)
+    files_changed: Mapped[int] = mapped_column(Integer, default=0)
+    duration_seconds: Mapped[float] = mapped_column(Float, default=0.0)
 
 
-def _migrate_table(engine, table_name: str, model_cls) -> None:
+def _migrate_table(engine, table_name: str, model_cls: type[Base]) -> None:
     """Add any columns present in the model but missing from the SQLite table."""
+    import sqlite3
+
     inspector = inspect(engine)
     if not inspector.has_table(table_name):
         return
@@ -158,9 +155,10 @@ def _migrate_table(engine, table_name: str, model_cls) -> None:
         if col.name not in existing:
             # SQLite ALTER TABLE ADD COLUMN cannot add PRIMARY KEY / UNIQUE / NOT NULL without default.
             # All our new columns are nullable, so this is safe.
+            col_type = col.type.compile(dialect=sqlite3.dialect())
             with engine.begin() as conn:
                 conn.execute(
-                    text(f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col.type}")
+                    text(f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col_type}")
                 )
 
 
@@ -203,12 +201,12 @@ class Database:
         """Remove DB rows for given paths. Returns number deleted."""
         if not paths:
             return 0
-        BATCH = 500
+        batch_size = 500
         deleted = 0
         with self.session() as s:
             path_list = list(paths)
-            for i in range(0, len(path_list), BATCH):
-                batch = path_list[i : i + BATCH]
+            for i in range(0, len(path_list), batch_size):
+                batch = path_list[i : i + batch_size]
                 result = s.query(DBFile).filter(DBFile.path.in_(batch)).delete(
                     synchronize_session=False
                 )
@@ -216,7 +214,7 @@ class Database:
             s.commit()
         return deleted
 
-    def upsert_file(self, info: FileInfo, session: Optional[Session] = None) -> None:
+    def upsert_file(self, info: FileInfo, session: Session | None = None) -> None:
         """Insert new or update existing."""
         own_session = session is None
         s = session or self.session()
@@ -285,7 +283,7 @@ class Database:
         db_file.corruption_reason = info.corruption_reason
         db_file.duplicate_group_id = info.duplicate_group_id
 
-        db_file.last_scanned = datetime.utcnow()
+        db_file.last_scanned = datetime.now(timezone.utc)
 
     def save_tag_backup(self, file_id: int, backup: dict) -> None:
         """Store original tags JSON before a write operation."""
@@ -297,7 +295,7 @@ class Database:
                 row.tag_backup_json = json.dumps(backup, ensure_ascii=False)
                 s.commit()
 
-    def save_written_tags(self, file_id: int, tags, fields: set[str]) -> None:
+    def save_written_tags(self, file_id: int, tags: TrackTags, fields: set[str]) -> None:
         """Update DB columns to reflect what was just written to disk.
 
         Also sets tag_fix_date so the TUI can distinguish fixed vs pending.
@@ -328,11 +326,11 @@ class Database:
                 row.genre = tags.genre
             if "isrc" in fields:
                 row.isrc = tags.isrc
-            row.tag_fix_date = datetime.utcnow()
+            row.tag_fix_date = datetime.now(timezone.utc)
             s.commit()
 
 
-def _enable_wal(dbapi_conn, _connection_record):
+def _enable_wal(dbapi_conn, _connection_record: object) -> None:
     dbapi_conn.execute("PRAGMA journal_mode=WAL")
     dbapi_conn.execute("PRAGMA synchronous=NORMAL")
     dbapi_conn.execute("PRAGMA cache_size=-64000")  # 64MB
@@ -354,4 +352,3 @@ def reset_database(db_path: str | Path) -> None:
     for sidecar in (path.with_suffix(".db-wal"), path.with_suffix(".db-shm")):
         if sidecar.exists():
             sidecar.unlink()
-

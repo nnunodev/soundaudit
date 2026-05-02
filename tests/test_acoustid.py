@@ -15,8 +15,7 @@ from soundaudit.analyzer.acoustid import (
     find_acoustid_groups,
     write_acoustid_groups,
 )
-from soundaudit.analyzer.duplicates import DuplicateGroupResult
-from soundaudit.db.store import DBFile, Database
+from soundaudit.db.store import Database, DBFile
 
 
 @pytest.fixture

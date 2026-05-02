@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from io import StringIO
 from pathlib import Path
-
-import pytest
 
 from soundaudit.reporter import (
     MarkdownSection,

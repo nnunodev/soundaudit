@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mutagen.id3 import COMM, TDRC, TIT2, TPE1, TPOS, TRCK
 from mutagen.mp3 import MP3
-from mutagen.id3 import ID3, COMM, TIT2, TPE1, TRCK, TPOS, TDRC, TSRC
 
 from soundaudit.actuator.tags import (
     TagWriteError,

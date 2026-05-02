@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from soundaudit.db.store import Database, _enable_wal, reset_database
 
 
@@ -56,7 +54,6 @@ class TestResetDatabase:
 
     def test_disposes_engine_before_unlink(self, tmp_path: Path) -> None:
         db_path = tmp_path / "locked.db"
-        db = Database(str(db_path))
         # On Windows, dispose the original engine first so its pooled
         # connections release the file handle.  Database.close_all() handles
         # this for every engine SoundAudit has opened.
@@ -68,6 +65,7 @@ class TestResetDatabase:
 class TestDatabaseUpsert:
     def test_upsert_new_file(self, tmp_path: Path) -> None:
         from datetime import datetime
+
         from soundaudit.models import AudioFormat, FileInfo, TrackTags
 
         db = Database(str(tmp_path / "test.db"))
@@ -92,6 +90,7 @@ class TestDatabaseUpsert:
 
     def test_upsert_updates_existing(self, tmp_path: Path) -> None:
         from datetime import datetime
+
         from soundaudit.models import AudioFormat, FileInfo, TrackTags
 
         db = Database(str(tmp_path / "test.db"))
@@ -124,6 +123,7 @@ class TestDatabaseUpsert:
 
     def test_get_existing_paths(self, tmp_path: Path) -> None:
         from datetime import datetime
+
         from soundaudit.models import AudioFormat, FileInfo, TrackTags
 
         db = Database(str(tmp_path / "test.db"))
@@ -140,6 +140,7 @@ class TestDatabaseUpsert:
 
     def test_delete_by_paths(self, tmp_path: Path) -> None:
         from datetime import datetime
+
         from soundaudit.models import AudioFormat, FileInfo, TrackTags
 
         db = Database(str(tmp_path / "test.db"))

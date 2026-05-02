@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from soundaudit.db.store import DBFile, Database
+from soundaudit.db.store import Database, DBFile
 from soundaudit.resolver.musicbrainz import (
     AcoustidLookupClient,
     MusicBrainzClient,
@@ -183,16 +183,16 @@ class TestAcoustidLookupClient:
 
     def test_lookup_http_fallback(self) -> None:
         client = AcoustidLookupClient(api_key="test-key")
-        with patch.dict("sys.modules", {"acoustid": None}):
-            with patch("requests.get") as mock_get:
-                mock_get.return_value.json.return_value = {
-                    "status": "ok",
-                    "results": [
-                        {"score": 0.88, "recordings": [{"id": "rec-def"}]}
-                    ],
-                }
-                mock_get.return_value.raise_for_status = MagicMock()
-                mbid, score = client.lookup("fp", 120_000)
+        with (patch.dict("sys.modules", {"acoustid": None}),
+            patch("requests.get") as mock_get):
+            mock_get.return_value.json.return_value = {
+                "status": "ok",
+                "results": [
+                    {"score": 0.88, "recordings": [{"id": "rec-def"}]}
+                ],
+            }
+            mock_get.return_value.raise_for_status = MagicMock()
+            mbid, score = client.lookup("fp", 120_000)
         assert mbid == "rec-def"
         assert score == 0.88
 

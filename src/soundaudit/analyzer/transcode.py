@@ -15,13 +15,12 @@ cutoff frequency:
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+
 from rich.console import Console
 
 # ---------------------------------------------------------------------------
@@ -363,7 +362,7 @@ def analyze_library_transcodes(
         c.print(f"  [dim]{msg}[/dim]")
 
     with database.session() as s:
-        for db_file, res in zip(rows, results):
+        for db_file, res in zip(rows, results, strict=True):
             row = s.query(DBFile).filter_by(path=db_file.path).first()
             if row:
                 row.is_transcode = int(res.is_transcode)

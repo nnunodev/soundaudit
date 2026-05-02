@@ -6,11 +6,11 @@ artist+title fallback.  Stores canonical tags back into the database.
 
 from __future__ import annotations
 
+import contextlib
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import requests
 from rich.console import Console
@@ -22,16 +22,16 @@ from soundaudit._version import __version__
 class ResolvedMetadata:
     """Canonical metadata returned by MusicBrainz."""
 
-    mb_recording_id: Optional[str] = None
-    mb_release_id: Optional[str] = None
-    mb_track_id: Optional[str] = None
+    mb_recording_id: str | None = None
+    mb_release_id: str | None = None
+    mb_track_id: str | None = None
     score: float = 0.0
-    title: Optional[str] = None
-    artist: Optional[str] = None
-    album: Optional[str] = None
-    album_artist: Optional[str] = None
-    year: Optional[int] = None
-    genre: Optional[str] = None
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    album_artist: str | None = None
+    year: int | None = None
+    genre: str | None = None
 
 
 class MusicBrainzClient:
@@ -189,10 +189,8 @@ class MusicBrainzClient:
                 md.album_artist = self._join_artists(rel_ac)
             date_str = release.get("date") or ""
             if date_str and len(date_str) >= 4:
-                try:
+                with contextlib.suppress(ValueError):
                     md.year = int(date_str[:4])
-                except ValueError:
-                    pass
             # Try to grab a track id from the first medium
             track_list = release.get("media", [])
             if track_list:
@@ -205,10 +203,8 @@ class MusicBrainzClient:
             if rgs:
                 rg_date = rgs[0].get("first-release-date") or ""
                 if len(rg_date) >= 4:
-                    try:
+                    with contextlib.suppress(ValueError):
                         md.year = int(rg_date[:4])
-                    except ValueError:
-                        pass
 
         tags = data.get("tags", [])
         if tags:
@@ -227,12 +223,12 @@ class MusicBrainzClient:
             if name:
                 parts.append(name)
             join_phrase = ac.get("joinphrase", "")
-            if join_phrase and parts:
-                # avoid double spacing when joinphrase already contains spaces
-                if not parts[-1].endswith(join_phrase.strip()[-1] if join_phrase.strip() else ""):
-                    parts.append(join_phrase)
-                elif join_phrase and not parts[-1].endswith(join_phrase):
-                    parts.append(join_phrase)
+            # avoid double spacing when joinphrase already contains spaces
+            if join_phrase and parts and (
+                not parts[-1].endswith(join_phrase.strip()[-1] if join_phrase.strip() else "")
+                or join_phrase and not parts[-1].endswith(join_phrase)
+            ):
+                parts.append(join_phrase)
         joined = "".join(parts).strip()
         return joined
 
@@ -501,7 +497,7 @@ class MusicBrainzResolver:
                 row.mb_release_id = md.mb_release_id
                 row.mb_track_id = md.mb_track_id
                 row.mb_score = md.score
-                row.mb_match_date = datetime.utcnow()
+                row.mb_match_date = datetime.now(timezone.utc)
                 row.mb_title = md.title
                 row.mb_artist = md.artist
                 row.mb_album = md.album

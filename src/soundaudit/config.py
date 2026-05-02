@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from soundaudit.models import HashStrategy
+from soundaudit.paths import find_config_file, get_config_dir, get_default_db_path
 
 
 class ScanConfig(BaseModel):
-    paths: list[str] = Field(default_factory=lambda: ["/mnt/nas2/Music"])
-    extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a"])
+    paths: list[str] = Field(default_factory=list)
+    extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a", ".ogg"])
     workers: int = Field(default=4, ge=1, le=32)
     follow_symlinks: bool = False
     hash_strategy: HashStrategy = Field(default=HashStrategy.HEAD_ONLY)
@@ -40,7 +40,7 @@ class ScanConfig(BaseModel):
 
 
 class DatabaseConfig(BaseModel):
-    path: str = "~/.local/share/soundaudit/scan.db"
+    path: str = str(get_default_db_path())
 
     def resolved(self) -> Path:
         return Path(self.path).expanduser().resolve()
@@ -52,7 +52,7 @@ class MusicBrainzConfig(BaseModel):
 
 
 class FingerprintConfig(BaseModel):
-    enabled: bool = True
+    enabled: bool = False
     fpcalc_path: str = "/usr/bin/fpcalc"
     cache_only: bool = False
     api_key: str = ""
@@ -83,11 +83,19 @@ class AppConfig(BaseSettings):
     actuator: ActuatorConfig = Field(default_factory=ActuatorConfig)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "AppConfig":
-        with open(path, "r", encoding="utf-8") as f:
+    def from_yaml(cls, path: str | Path | None = None) -> AppConfig:
+        if path is None:
+            found = find_config_file()
+            if found is None:
+                return cls()
+            path = found
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return cls(**data)
 
-    def to_yaml(self, path: str | Path) -> None:
+    def to_yaml(self, path: str | Path | None = None) -> None:
+        if path is None:
+            get_config_dir().mkdir(parents=True, exist_ok=True)
+            path = get_config_dir() / "config.yaml"
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump(self.model_dump(), f, default_flow_style=False, sort_keys=False)
