@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -25,6 +26,13 @@ from textual.widgets import (
 )
 
 from soundaudit._version import __version__
+from soundaudit.actuator.tags import (
+    TagWriteError,
+    resolved_metadata_to_tags,
+    snapshot_tags,
+    validate_fields,
+    write_tags,
+)
 from soundaudit.analyzer.acoustid import (
     AcoustidDuplicateAnalyzer,
     DupType,
@@ -42,14 +50,6 @@ from soundaudit.analyzer.duplicates import (
     write_duplicate_groups,
 )
 from soundaudit.analyzer.transcode import analyze_library_transcodes
-from soundaudit.actuator.tags import (
-    TagWriteError,
-    resolved_metadata_to_tags,
-    snapshot_tags,
-    validate_fields,
-    write_tags,
-)
-from soundaudit.config import AppConfig
 from soundaudit.db.store import AcoustidGroup, Database
 from soundaudit.models import FileInfo
 from soundaudit.resolver.musicbrainz import MusicBrainzResolver
@@ -150,6 +150,7 @@ class DashboardScreen(Screen[None]):
         try:
             database = Database(str(db_path))
             from sqlalchemy import func
+
             from soundaudit.db.store import DBFile, DuplicateGroup
             with database.session() as s:
                 total = s.query(func.count(DBFile.id)).scalar() or 0
@@ -389,7 +390,7 @@ class ScanScreen(Screen[None]):
         self._action_focus_idx: int = 0
         self._scan_focus_group: str = "paths"
         path_list = self.query_one("#path-list", Vertical)
-        for idx, (full, short) in enumerate(zip(full_paths, short_paths)):
+        for idx, (full, short) in enumerate(zip(full_paths, short_paths, strict=False)):
             pid = f"path-{idx}"
             self._path_map[pid] = (full, short)
             self._path_selected[pid] = True
@@ -542,16 +543,12 @@ class ScanScreen(Screen[None]):
             event.stop()
 
     def _activate_action(self, bid: str) -> None:
-        if bid == "btn-start":
-            if "dimmed" not in self.query_one("#btn-start", Static).classes:
-                self._start_scan()
-        elif bid == "btn-stop":
-            if "dimmed" not in self.query_one("#btn-stop", Static).classes:
-                self.action_cancel()
-        elif bid == "btn-back":
-            if "dimmed" not in self.query_one("#btn-back", Static).classes:
-                if not self.is_scanning:
-                    self.app.pop_screen()
+        if bid == "btn-start" and "dimmed" not in self.query_one("#btn-start", Static).classes:
+            self._start_scan()
+        elif bid == "btn-stop" and "dimmed" not in self.query_one("#btn-stop", Static).classes:
+            self.action_cancel()
+        elif bid == "btn-back" and "dimmed" not in self.query_one("#btn-back", Static).classes and not self.is_scanning:
+            self.app.pop_screen()
 
     def watch_files_found(self, value: int) -> None:
         self.query_one("#stat-found", Static).update(f"F {value:,}")
@@ -755,10 +752,9 @@ class ScanScreen(Screen[None]):
         for p in all_files:
             try:
                 file_mtime = os.path.getmtime(p)
-                if str(p) in existing:
-                    if abs(file_mtime - existing[str(p)]) <= 1.0:
-                        skipped += 1
-                        continue
+                if str(p) in existing and abs(file_mtime - existing[str(p)]) <= 1.0:
+                    skipped += 1
+                    continue
                 files_to_scan.append(p)
             except OSError as exc:
                 app.call_from_thread(
@@ -1062,6 +1058,7 @@ class ReportScreen(Screen[None]):
         try:
             database = Database(app.get_db_path())
             from sqlalchemy import func
+
             from soundaudit.db.store import DBFile
             with database.session() as s:
                 total = s.query(func.count(DBFile.id)).scalar() or 0
@@ -1122,7 +1119,7 @@ class ReportScreen(Screen[None]):
                 )
             paths = [f.path for f in files]
             short_paths = self._shorten_paths(paths)
-            for f, sp in zip(files, short_paths):
+            for f, sp in zip(files, short_paths, strict=False):
                 missing = []
                 if not f.title:
                     missing.append("title")
@@ -1152,7 +1149,7 @@ class ReportScreen(Screen[None]):
                 )
             paths = [f.path for f in files]
             short_paths = self._shorten_paths(paths)
-            for f, sp in zip(files, short_paths):
+            for f, sp in zip(files, short_paths, strict=False):
                 status = "Fixed" if f.tag_fix_date else "Pending"
                 style = "[green]" if f.tag_fix_date else "[yellow]"
                 table.add_row(
@@ -1176,7 +1173,7 @@ class ReportScreen(Screen[None]):
                 files = s.query(DBFile).filter(DBFile.is_corrupt == 1).all()
             paths = [f.path for f in files]
             short_paths = self._shorten_paths(paths)
-            for f, sp in zip(files, short_paths):
+            for f, sp in zip(files, short_paths, strict=False):
                 table.add_row(sp, f.corruption_reason or "unknown")
         except Exception:
             table.add_row("Error", "Could not load database")
@@ -1345,7 +1342,7 @@ class ReportScreen(Screen[None]):
 
             paths = [f.path for f in files]
             short_paths = self._shorten_paths(paths)
-            for f, sp in zip(files, short_paths):
+            for f, sp in zip(files, short_paths, strict=False):
                 conf_style = {
                     (0.7, 1.0): "[bold red]",
                     (0.4, 0.7): "[yellow]",
@@ -1399,8 +1396,8 @@ class ReportScreen(Screen[None]):
         app = self.app  # type: ignore[attr-defined]
         db_path = app.get_db_path()
         try:
-            from soundaudit.reporter import ReportExporter, infer_format
             from soundaudit.db.store import Database
+            from soundaudit.reporter import ReportExporter, infer_format
             db = Database(db_path)
             fmt = infer_format(path)
             exporter = ReportExporter(path)
@@ -1426,6 +1423,7 @@ class ReportScreen(Screen[None]):
 
     def _export_summary(self, db: Database, exporter, fmt: str) -> None:
         from sqlalchemy import func
+
         from soundaudit.db.store import DBFile, DuplicateGroup
         with db.session() as s:
             total = s.query(func.count(DBFile.id)).scalar() or 0
@@ -1491,9 +1489,9 @@ class ReportScreen(Screen[None]):
             exporter.write_markdown("Tag Status", [MarkdownSection("Tag Write Status", ["File", "MB Title", "Current Title", "Status"], md_rows)])
 
     def _export_duplicates(self, db: Database, exporter, fmt: str) -> None:
+        from soundaudit.analyzer.duplicates import DuplicateGroupResult, analyze_keepers
         from soundaudit.db.store import DBFile, DuplicateGroup
         from soundaudit.reporter import MarkdownSection
-        from soundaudit.analyzer.duplicates import DuplicateGroupResult, analyze_keepers
         with db.session() as s:
             groups = s.query(DuplicateGroup).all()
         group_data = []
@@ -1532,10 +1530,10 @@ class ReportScreen(Screen[None]):
             exporter.write_markdown("Duplicate Groups", md_sections)
 
     def _export_acoustid(self, db: Database, exporter, fmt: str) -> None:
+        from soundaudit.analyzer.acoustid import analyze_acoustid_keepers
+        from soundaudit.analyzer.duplicates import DuplicateGroupResult
         from soundaudit.db.store import AcoustidGroup, DBFile
         from soundaudit.reporter import MarkdownSection
-        from soundaudit.analyzer.duplicates import DuplicateGroupResult
-        from soundaudit.analyzer.acoustid import analyze_acoustid_keepers
 
         with db.session() as s:
             groups = s.query(AcoustidGroup).all()
@@ -2092,7 +2090,7 @@ class AnalyzerRunScreen(Screen[None]):
             self._log("[cyan]━ Transcode Detection ━[/cyan]")
             self._log("[yellow]This may take several minutes for large libraries...[/yellow]")
             try:
-                results = analyze_library_transcodes(
+                analyze_library_transcodes(
                     database,
                     workers=4,
                     log_callback=self._log,
@@ -2167,7 +2165,7 @@ class FixTagsScreen(Screen[None]):
         path_list = self.query_one("#path-list", Vertical)
 
         # Mount paths
-        for idx, (full, short) in enumerate(zip(full_paths, short_paths)):
+        for idx, (full, short) in enumerate(zip(full_paths, short_paths, strict=False)):
             pid = f"fix-path-{idx}"
             self._path_map[pid] = (full, short)
             self._path_selected[pid] = True
@@ -2253,6 +2251,7 @@ class FixTagsScreen(Screen[None]):
         try:
             db = Database(app.get_db_path())
             from sqlalchemy import func
+
             from soundaudit.db.store import DBFile
             with db.session() as s:
                 q = s.query(func.count(DBFile.id)).filter(
@@ -2455,8 +2454,9 @@ class FixTagsRunScreen(Screen[None]):
         try:
             db_path = app.get_db_path()
             database = Database(db_path)
-            from soundaudit.db.store import DBFile
             from sqlalchemy import or_
+
+            from soundaudit.db.store import DBFile
 
             with database.session() as s:
                 files = (
@@ -2525,10 +2525,8 @@ class FixTagsRunScreen(Screen[None]):
                     self._log(f"  [dim]{idx}/{total}[/dim]  [dim]— unchanged[/dim]  {path.name}")
                     skipped += 1
                     if not self._dry_run:
-                        try:
+                        with contextlib.suppress(Exception):
                             database.save_written_tags(db_file.id, tags, self._fields)
-                        except Exception:
-                            pass
                     continue
 
                 # Show the changes
