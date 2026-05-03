@@ -940,6 +940,7 @@ class ScanScreen(Screen[None]):
             finally:
                 app.call_from_thread(scan_bar.advance, 1)
 
+        app.call_from_thread(setattr, self, "current_file", "[green]Scan complete[/green]")
         app.call_from_thread(setattr, self, "is_scanning", False)
         app.call_from_thread(self.post_message, self.ScanComplete(saved=saved))
 
