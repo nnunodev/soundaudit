@@ -350,7 +350,7 @@ class ScanScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         with Container(id="scan-screen"):
-            yield Static("[b]Scan[/b]  [dim]esc = back  f = fingerprint[/dim]", id="scan-title")
+            yield Static("[b]Scan[/b]  [dim]esc = back[/dim]", id="scan-title")
             with Vertical(id="path-list"):
                 yield Static("[dim]Paths[/dim]", id="path-label")
             with Horizontal(id="stats-row"):
@@ -588,9 +588,15 @@ class ScanScreen(Screen[None]):
 
     def watch_current_file(self, value: str) -> None:
         display = Path(value).name if value else ""
-        self.query_one("#current-file", Static).update(
-            f"▸ {display}" if display else ""
-        )
+        if display.startswith("[") and display.endswith("]"):
+            from rich.text import Text
+            self.query_one("#current-file", Static).update(
+                Text.from_markup(f"▸ {display}") if display else ""
+            )
+        else:
+            self.query_one("#current-file", Static).update(
+                f"▸ {display}" if display else ""
+            )
 
     def watch_is_scanning(self, scanning: bool) -> None:
         start = self.query_one("#btn-start", Static)
