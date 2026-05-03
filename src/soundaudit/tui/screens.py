@@ -1438,13 +1438,6 @@ class ReportScreen(Screen[None]):
         except Exception:
             table.add_row("Error", "", "", "Could not load transcodes")
 
-    def _human_size(self, size_bytes: int | float) -> str:
-        for unit in ("B", "KB", "MB", "GB", "TB"):
-            if abs(size_bytes) < 1024.0:
-                return f"{size_bytes:.1f} {unit}"
-            size_bytes /= 1024.0
-        return f"{size_bytes:.1f} PB"
-
     @staticmethod
     def _shorten_paths(paths: list[str]) -> list[str]:
         """Strip the longest common directory prefix from a list of paths."""

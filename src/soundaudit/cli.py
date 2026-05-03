@@ -30,6 +30,7 @@ from soundaudit.analyzer.duplicates import (
     DuplicateAnalyzer,
     DuplicateGroupResult,
     KeeperVerdict,
+    _human_size,
     analyze_keepers,
 )
 from soundaudit.analyzer.transcode import analyze_library_transcodes
@@ -1298,14 +1299,6 @@ def _prompt_delete_acoustid(
                     console.print(f"[dim]Deleted {fv.db_file.path}[/dim]")
                 except OSError as exc:
                     console.print(f"[red]Failed to delete {fv.db_file.path}: {exc}[/red]")
-
-
-def _human_size(size_bytes: int | float) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(size_bytes) < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} PB"
 
 
 def main() -> None:
