@@ -21,8 +21,8 @@ from textual.widgets import (
     Footer,
     Header,
     Input,
-    Log,
     ProgressBar,
+    RichLog,
     Static,
 )
 
@@ -371,7 +371,7 @@ class ScanScreen(Screen[None]):
                 yield Static("Scan", id="scanning-label")
                 yield ProgressBar(total=100, id="scan-bar", show_eta=False)
             yield Static("", id="current-file")
-            yield Log(id="scan-log")
+            yield RichLog(id="scan-log", markup=True)
             with Horizontal(id="scan-actions"):
                 yield Static("Start", id="btn-start", classes="scan-link")
                 yield Static("Stop", id="btn-stop", classes="scan-link dimmed")
@@ -431,7 +431,7 @@ class ScanScreen(Screen[None]):
         # Append presets to focusable list
         self._path_ids.extend(preset_ids)
         # strip focus from everything non-interactive except log (scrollable)
-        self.query_one("#scan-log", Log).can_focus = True
+        self.query_one("#scan-log", RichLog).can_focus = True
         # Use scan-title as keyboard focus anchor (not inside scrollable container)
         self.query_one("#scan-title", Static).can_focus = True
         for sid in ("stat-found", "stat-scanned", "stat-skipped", "stat-saved",
@@ -446,8 +446,8 @@ class ScanScreen(Screen[None]):
             self.query_one(f"#{bid}", Static).can_focus = False
         self.query_one("#scan-title", Static).focus()
         self._draw_focus()
-        log = self.query_one("#scan-log", Log)
-        log.write_line("Ready. ↑↓ move, Enter/Space toggle, Tab = actions, f = fingerprint, g = focus log")
+        log = self.query_one("#scan-log", RichLog)
+        log.write("Ready. ↑↓ move, Enter/Space toggle, Tab = actions, f = fingerprint, g = focus log")
         self._update_progress_totals()
 
     def _draw_focus(self) -> None:
@@ -524,7 +524,7 @@ class ScanScreen(Screen[None]):
         is_log_focused = focused_wid == "scan-log"
 
         if is_log_focused and key in ("up", "down", "pageup", "pagedown"):
-            log = self.query_one("#scan-log", Log)
+            log = self.query_one("#scan-log", RichLog)
             if key == "up":
                 log.scroll_up()
             elif key == "down":
@@ -553,7 +553,7 @@ class ScanScreen(Screen[None]):
                 self._refocus_action(1)
             event.stop()
         elif key == "g":
-            self.query_one("#scan-log", Log).focus()
+            self.query_one("#scan-log", RichLog).focus()
             event.stop()
         elif key in ("tab",):
             if self._scan_focus_group == "paths":
@@ -630,8 +630,8 @@ class ScanScreen(Screen[None]):
 
     def _toggle_fingerprint(self) -> None:
         self.fingerprint_enabled = not self.fingerprint_enabled
-        log = self.query_one("#scan-log", Log)
-        log.write_line(
+        log = self.query_one("#scan-log", RichLog)
+        log.write(
             f"Fingerprint {'enabled' if self.fingerprint_enabled else 'disabled'}."
         )
 
@@ -663,7 +663,7 @@ class ScanScreen(Screen[None]):
     def action_cancel(self) -> None:
         if self.is_scanning:
             self.is_scanning = False
-            self.query_one("#scan-log", Log).write_line("Cancelling...")
+            self.query_one("#scan-log", RichLog).write("Cancelling...")
         else:
             self.app.pop_screen()
 
@@ -677,7 +677,7 @@ class ScanScreen(Screen[None]):
             if sel
         ]
         if not selected:
-            self.query_one("#scan-log", Log).write_line(
+            self.query_one("#scan-log", RichLog).write(
                 "No paths selected. Toggle at least one."
             )
             return
@@ -695,12 +695,12 @@ class ScanScreen(Screen[None]):
         self.files_saved = 0
         self.current_file = ""
         self.is_scanning = True
-        log = self.query_one("#scan-log", Log)
+        log = self.query_one("#scan-log", RichLog)
         log.clear()
-        log.write_line(f"Starting scan of {len(selected)} path(s)...")
+        log.write(f"Starting scan of {len(selected)} path(s)...")
         enabled = [k for k, v in self._analysis_choices.items() if v]
         if enabled:
-            log.write_line(f"After-scan analyses: {', '.join(enabled)}")
+            log.write(f"After-scan analyses: {', '.join(enabled)}")
         self.run_worker(
             self._scan_worker, exclusive=True, thread=True
         )
@@ -717,7 +717,7 @@ class ScanScreen(Screen[None]):
         database = Database(db_path)
         existing = database.get_existing_paths()
 
-        log = self.query_one("#scan-log", Log)
+        log = self.query_one("#scan-log", RichLog)
         discovery_bar = self.query_one("#discovery-bar", ProgressBar)
         scan_bar = self.query_one("#scan-bar", ProgressBar)
 
@@ -726,20 +726,20 @@ class ScanScreen(Screen[None]):
 
         # Discovery phase
         app.call_from_thread(
-            log.write_line, f"Discovering files in {len(selected_paths)} selected path(s)..."
+            log.write, f"Discovering files in {len(selected_paths)} selected path(s)..."
         )
         total_estimate = 0
         for root_path in selected_paths:
             root = Path(root_path).expanduser().resolve()
             if not root.exists():
                 app.call_from_thread(
-                    log.write_line, f"Skipping missing path: {root}"
+                    log.write, f"Skipping missing path: {root}"
                 )
                 continue
             try:
                 for p in discover_files(root, extensions):
                     if not self.is_scanning:
-                        app.call_from_thread(log.write_line, "Cancelled during discovery.")
+                        app.call_from_thread(log.write, "Cancelled during discovery.")
                         return
                     all_files.append(p)
                     total_estimate += 1
@@ -753,7 +753,7 @@ class ScanScreen(Screen[None]):
                             progress=total_estimate,
                         )
             except Exception as exc:
-                app.call_from_thread(log.write_line, f"Error in {root}: {exc}")
+                app.call_from_thread(log.write, f"Error in {root}: {exc}")
 
         app.call_from_thread(setattr, self, "files_found", len(all_files))
         app.call_from_thread(
@@ -762,7 +762,7 @@ class ScanScreen(Screen[None]):
             progress=max(len(all_files), 1),
         )
         app.call_from_thread(
-            log.write_line,
+            log.write,
             f"Discovered {len(all_files):,} file(s) total.",
         )
 
@@ -772,7 +772,7 @@ class ScanScreen(Screen[None]):
         if stale_paths:
             removed = database.delete_by_paths(stale_paths)
             app.call_from_thread(
-                log.write_line,
+                log.write,
                 f"Removed {removed:,} stale database entr{'ies' if removed != 1 else 'y'} (no longer on disk).",
             )
 
@@ -787,24 +787,24 @@ class ScanScreen(Screen[None]):
                 files_to_scan.append(p)
             except OSError as exc:
                 app.call_from_thread(
-                    log.write_line,
+                    log.write,
                     f"[WARN] Could not stat {p}: {exc}"
                 )
 
         app.call_from_thread(setattr, self, "files_skipped", skipped)
         app.call_from_thread(
-            log.write_line,
+            log.write,
             f"Skipped {skipped:,} unchanged file{'' if skipped == 1 else 's'}.",
         )
 
         total_to_scan = len(files_to_scan)
         if total_to_scan == 0:
-            app.call_from_thread(log.write_line, "No new or changed files to scan.")
+            app.call_from_thread(log.write, "No new or changed files to scan.")
             app.call_from_thread(setattr, self, "is_scanning", False)
             app.call_from_thread(self.post_message, self.ScanComplete(saved=0))
             return
 
-        app.call_from_thread(log.write_line, f"Scanning {total_to_scan:,} file(s)...")
+        app.call_from_thread(log.write, f"Scanning {total_to_scan:,} file(s)...")
         app.call_from_thread(scan_bar.update, total=max(total_to_scan, 1))
 
         saved = 0
@@ -825,7 +825,7 @@ class ScanScreen(Screen[None]):
                     if log_batch:
                         app.call_from_thread(self._write_log_lines, log_batch[:])
                         log_batch.clear()
-                    app.call_from_thread(log.write_line, "Cancelled.")
+                    app.call_from_thread(log.write, "Cancelled.")
                     break
                 database.upsert_file(info)
                 saved += 1
@@ -833,12 +833,12 @@ class ScanScreen(Screen[None]):
                 if info.is_corrupt:
                     corrupt_count += 1
                     app.call_from_thread(
-                        log.write_line,
+                        log.write,
                         f"[CORRUPT] {info.path}",
                     )
                     if info.corruption_reason:
                         app.call_from_thread(
-                            log.write_line,
+                            log.write,
                             f"  reason: {info.corruption_reason}",
                         )
                 else:
@@ -856,7 +856,7 @@ class ScanScreen(Screen[None]):
 
         app.call_from_thread(setattr, self, "is_scanning", False)
         app.call_from_thread(
-            log.write_line,
+            log.write,
             f"Done. Saved {saved:,} file(s) — {saved - corrupt_count:,} valid, {corrupt_count:,} corrupt.",
         )
 
@@ -865,55 +865,55 @@ class ScanScreen(Screen[None]):
 
         if choices.get("duplicates", True):
             try:
-                app.call_from_thread(log.write_line, "▸ Analyzing content-hash duplicates...")
+                app.call_from_thread(log.write, "▸ Analyzing content-hash duplicates...")
                 groups = find_duplicate_groups(database)
                 if groups:
                     write_duplicate_groups(database, groups)
                     total_wasted = sum(r.wasted_bytes for r in groups)
                     app.call_from_thread(
-                        log.write_line,
+                        log.write,
                         f"  Found {len(groups)} duplicate groups ({sum(r.file_count for r in groups)} files). "
                         f"Wasted: {_human_size(total_wasted)}.",
                     )
                 else:
-                    app.call_from_thread(log.write_line, "  No content-hash duplicates found.")
+                    app.call_from_thread(log.write, "  No content-hash duplicates found.")
             except Exception as exc:
-                app.call_from_thread(log.write_line, f"ERROR: Duplicate analysis failed: {exc}")
+                app.call_from_thread(log.write, f"ERROR: Duplicate analysis failed: {exc}")
 
         if choices.get("acoustid"):
             try:
-                app.call_from_thread(log.write_line, "▸ Analyzing AcoustID duplicates...")
+                app.call_from_thread(log.write, "▸ Analyzing AcoustID duplicates...")
                 ac_groups = find_acoustid_groups(database)
                 if ac_groups:
                     write_acoustid_groups(database, ac_groups)
                     total_wasted = sum(r.wasted_bytes for r in ac_groups)
                     app.call_from_thread(
-                        log.write_line,
+                        log.write,
                         f"  Found {len(ac_groups)} AcoustID groups ({sum(r.file_count for r in ac_groups)} files). "
                         f"Wasted: {_human_size(total_wasted)}.",
                     )
                 else:
-                    app.call_from_thread(log.write_line, "  No AcoustID duplicates found.")
+                    app.call_from_thread(log.write, "  No AcoustID duplicates found.")
             except Exception as exc:
-                app.call_from_thread(log.write_line, f"ERROR: AcoustID analysis failed: {exc}")
+                app.call_from_thread(log.write, f"ERROR: AcoustID analysis failed: {exc}")
 
         if choices.get("transcodes"):
             try:
-                app.call_from_thread(log.write_line, "▸ Analyzing transcodes...")
+                app.call_from_thread(log.write, "▸ Analyzing transcodes...")
                 from soundaudit.analyzer.transcode import analyze_library_transcodes
                 def _tc_log(msg: str) -> None:
-                    app.call_from_thread(log.write_line, f"  {msg}")
+                    app.call_from_thread(log.write, f"  {msg}")
                 analyze_library_transcodes(
                     database,
                     workers=4,
                     log_callback=_tc_log,
                 )
             except Exception as exc:
-                app.call_from_thread(log.write_line, f"ERROR: Transcode analysis failed: {exc}")
+                app.call_from_thread(log.write, f"ERROR: Transcode analysis failed: {exc}")
 
         if choices.get("resolve"):
             try:
-                app.call_from_thread(log.write_line, "▸ Resolving MusicBrainz metadata...")
+                app.call_from_thread(log.write, "▸ Resolving MusicBrainz metadata...")
                 app.call_from_thread(
                     setattr, self, "current_file", "Resolving MusicBrainz metadata..."
                 )
@@ -926,10 +926,10 @@ class ScanScreen(Screen[None]):
                 def _resolve_progress(msg: str) -> None:
                     if msg.startswith("  "):
                         # Failure or summary line → log only
-                        app.call_from_thread(log.write_line, msg)
+                        app.call_from_thread(log.write, msg)
                     elif msg.startswith("Resolving ") or msg.startswith("Done."):
                         # Header / footer → log only
-                        app.call_from_thread(log.write_line, f"  {msg}")
+                        app.call_from_thread(log.write, f"  {msg}")
                     else:
                         # Plain filename → yellow label only (no log spam)
                         short = msg if len(msg) <= 55 else msg[:52] + "..."
@@ -942,30 +942,30 @@ class ScanScreen(Screen[None]):
                 )
                 if results:
                     app.call_from_thread(
-                        log.write_line,
+                        log.write,
                         f"  Resolved {len(results)} file(s) via MusicBrainz.",
                     )
                 else:
-                    app.call_from_thread(log.write_line, "  No new files resolved.")
+                    app.call_from_thread(log.write, "  No new files resolved.")
                 app.call_from_thread(setattr, self, "current_file", "")
             except Exception as exc:
-                app.call_from_thread(log.write_line, f"ERROR: MusicBrainz resolution failed: {exc}")
+                app.call_from_thread(log.write, f"ERROR: MusicBrainz resolution failed: {exc}")
                 app.call_from_thread(setattr, self, "current_file", "")
 
         app.call_from_thread(self.post_message, self.ScanComplete(saved=saved))
 
     def _write_log_lines(self, lines: list[str]) -> None:
-        log = self.query_one("#scan-log", Log)
+        log = self.query_one("#scan-log", RichLog)
         for line in lines:
-            log.write_line(line)
+            log.write(line)
 
     def on_scan_screen_scan_complete(self, event: ScanComplete) -> None:
         if event.saved > 0:
-            self.query_one("#scan-log", Log).write_line(
+            self.query_one("#scan-log", RichLog).write(
                 f"Scan complete. {event.saved:,} file(s) saved."
             )
         else:
-            self.query_one("#scan-log", Log).write_line(
+            self.query_one("#scan-log", RichLog).write(
                 "Scan complete — nothing new to save."
             )
 
@@ -977,6 +977,7 @@ class ReportScreen(Screen[None]):
         ("q", "quit", "Quit"),
         ("escape", "back", "Back"),
         ("s", "export", "Export"),
+        ("d", "delete_corrupt", "Delete corrupt"),
     ]
 
     TAB_IDS: ClassVar[list[str]] = [
@@ -1027,6 +1028,11 @@ class ReportScreen(Screen[None]):
             if is_table_focused:
                 return  # let DataTable handle it
             self._tab_activate()
+        elif key == "d":
+            if self.TAB_IDS[self._tab_index] == "tab-corrupt":
+                self._delete_corrupt_tab()
+            event.stop()
+            return
         else:
             return
         event.stop()
@@ -1200,6 +1206,31 @@ class ReportScreen(Screen[None]):
         except Exception:
             table.add_row("Error", "Could not load database", "", "")
 
+    def _delete_corrupt_tab(self) -> None:
+        app: Any = self.app
+        try:
+            db = Database(app.get_db_path())
+            from soundaudit.db.store import DBFile
+            with db.session() as s:
+                files = s.query(DBFile).filter(DBFile.is_corrupt == 1).all()
+            if not files:
+                self.notify("No corrupt files to delete.", severity="warning", timeout=3)
+                return
+            deleted = 0
+            errors = 0
+            for f in files:
+                p = Path(f.path)
+                try:
+                    p.unlink()
+                    deleted += 1
+                except OSError:
+                    errors += 1
+            db.delete_by_paths({f.path for f in files})
+            self._load_corrupt()
+            self.notify(f"Deleted {deleted} corrupt file(s).", severity="information", timeout=3)
+        except Exception as exc:
+            self.notify(f"Failed to delete corrupt files: {exc}", severity="error", timeout=5)
+
     def _load_corrupt(self) -> None:
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
@@ -1210,10 +1241,15 @@ class ReportScreen(Screen[None]):
             from soundaudit.db.store import DBFile
             with database.session() as s:
                 files = s.query(DBFile).filter(DBFile.is_corrupt == 1).all()
+            if files:
+                self.notify(f"{len(files)} corrupt file(s). Press [b]d[/b] to delete.", timeout=3)
             paths = [f.path for f in files]
             short_paths = self._shorten_paths(paths)
             for f, sp in zip(files, short_paths, strict=False):
                 table.add_row(sp, f.corruption_reason or "unknown")
+
+            if not files:
+                table.add_row("No corrupt files found", "")
         except Exception:
             table.add_row("Error", "Could not load database")
 
@@ -2065,13 +2101,13 @@ class AnalyzerRunScreen(Screen[None]):
         yield Header()
         with Container(id="scan-screen"):
             yield Static("[b]Running Analyses[/b]", id="scan-title")
-            yield Log(id="scan-log")
+            yield RichLog(id="scan-log", markup=True)
             with Horizontal(id="scan-actions"):
                 yield Static("Back", id="btn-back", classes="scan-link")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#scan-log", Log).can_focus = False
+        self.query_one("#scan-log", RichLog).can_focus = False
         self.query_one("#btn-back", Static).can_focus = False
         self.query_one("#btn-back", Static).add_class("dimmed")
         self._running = True
@@ -2080,7 +2116,7 @@ class AnalyzerRunScreen(Screen[None]):
     def _log(self, msg: str) -> None:
         app: Any = self.app
         app.call_from_thread(
-            self.query_one("#scan-log", Log).write_line,
+            self.query_one("#scan-log", RichLog).write,
             msg,
         )
 
@@ -2487,17 +2523,17 @@ class FixTagsRunScreen(Screen[None]):
         with Container(id="scan-screen"):
             status = "Preview" if self._dry_run else "Writing"
             yield Static(f"[b]{status} Tags[/b]  [dim]esc = back[/dim]", id="scan-title")
-            yield Log(id="scan-log")
+            yield RichLog(id="scan-log", markup=True)
             with Horizontal(id="scan-actions"):
                 yield Static("Stop", id="btn-stop", classes="scan-link")
                 yield Static("Back", id="btn-back", classes="scan-link dimmed")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#scan-log", Log).can_focus = True
+        self.query_one("#scan-log", RichLog).can_focus = True
         self.query_one("#btn-stop", Static).can_focus = True
         self.query_one("#btn-back", Static).can_focus = True
-        self.query_one("#scan-log", Log).focus()
+        self.query_one("#scan-log", RichLog).focus()
         self._running = True
         self._action_focus_idx = 0
         self._focus_group = "log"
@@ -2506,7 +2542,7 @@ class FixTagsRunScreen(Screen[None]):
     def _log(self, msg: str) -> None:
         app: Any = self.app
         app.call_from_thread(
-            self.query_one("#scan-log", Log).write_line,
+            self.query_one("#scan-log", RichLog).write,
             msg,
         )
 
@@ -2648,7 +2684,7 @@ class FixTagsRunScreen(Screen[None]):
         is_log_focused = focused_wid == "scan-log"
 
         if is_log_focused and key in ("up", "down", "pageup", "pagedown"):
-            log = self.query_one("#scan-log", Log)
+            log = self.query_one("#scan-log", RichLog)
             if key == "up":
                 log.scroll_up()
             elif key == "down":
@@ -2663,13 +2699,13 @@ class FixTagsRunScreen(Screen[None]):
         if key == "tab":
             if self._focus_group == "log":
                 self._focus_group = "actions"
-                self.query_one("#scan-log", Log).blur()
+                self.query_one("#scan-log", RichLog).blur()
                 self._draw_focus()
             else:
                 self._focus_group = "log"
                 for bid in ("btn-stop", "btn-back"):
                     self.query_one(f"#{bid}", Static).remove_class("focused-nav")
-                self.query_one("#scan-log", Log).focus()
+                self.query_one("#scan-log", RichLog).focus()
             event.stop()
             return
 

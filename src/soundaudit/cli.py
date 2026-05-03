@@ -166,6 +166,7 @@ def report_cmd(
     duplicates: bool = typer.Option(False, "--duplicates", help="Show duplicate groups"),
     transcodes: bool = typer.Option(False, "--transcodes", help="Show suspected transcode files"),
     corrupt: bool = typer.Option(False, "--corrupt", help="Show corrupt/unreadable files"),
+    delete_corrupt: bool = typer.Option(False, "--delete-corrupt", help="Delete corrupt files from disk and database"),
     output: Path | None = typer.Option(None, "--output", "-o", help="Write report to file (infer format from extension: .json, .csv, .md, .txt)"),
     fmt: str | None = typer.Option(None, "--format", help="Override format: json, csv, markdown"),
 ) -> None:
@@ -185,7 +186,7 @@ def report_cmd(
     elif transcodes:
         _report_transcodes(database, out_path, out_format)
     elif corrupt:
-        _report_corrupt(database, out_path, out_format)
+        _report_corrupt(database, out_path, out_format, delete_corrupt)
     else:
         _report_summary(database, out_path, out_format)
 
@@ -380,6 +381,7 @@ def _report_corrupt(
     database: Database,
     out_path: Path | None = None,
     out_format: str = "console",
+    delete: bool = False,
 ) -> None:
     from soundaudit.db.store import DBFile
 
@@ -387,7 +389,7 @@ def _report_corrupt(
         files = s.query(DBFile).filter(DBFile.is_corrupt == 1).all()
 
     if not files:
-        if out_path:
+        if out_path and not delete:
             exporter = ReportExporter(out_path)
             if out_format == "json":
                 exporter.write_json({"report_type": "corrupt", "files": []})
@@ -398,6 +400,28 @@ def _report_corrupt(
             console.print(f"[green]Saved to {out_path}[/green]")
         else:
             console.print("[green]No corrupt files found.[/green]")
+        return
+
+    if delete:
+        if out_path:
+            pass  # Ignore output when deleting
+        deleted = 0
+        errors = 0
+        for f in files:
+            p = Path(f.path)
+            try:
+                p.unlink()
+                console.print(f"[green]Deleted[/green] {p}")
+                deleted += 1
+            except OSError as exc:
+                console.print(f"[red]Failed to delete[/red] {p}: {exc}")
+                errors += 1
+
+        # Remove deleted files from database
+        deleted_paths = {f.path for f in files}
+        database.delete_by_paths(deleted_paths)
+
+        console.print(f"[green]Deleted {deleted} corrupt file(s), {errors} errors.[/green]")
         return
 
     if out_path:
