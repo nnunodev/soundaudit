@@ -354,15 +354,15 @@ class ScanScreen(Screen[None]):
             with Vertical(id="path-list"):
                 yield Static("[dim]Paths[/dim]", id="path-label")
             with Horizontal(id="stats-row"):
-                yield Static("F 0", id="stat-found")
-                yield Static("S 0", id="stat-scanned")
-                yield Static("K 0", id="stat-skipped")
-                yield Static("V 0", id="stat-saved")
+                yield Static("Found 0", id="stat-found")
+                yield Static("Scanned 0", id="stat-scanned")
+                yield Static("Skipped 0", id="stat-skipped")
+                yield Static("Saved 0", id="stat-saved")
             with Horizontal(id="discovery-row"):
-                yield Static("Disc", id="discovery-label")
+                yield Static("Discovery", id="discovery-label")
                 yield ProgressBar(total=100, id="discovery-bar", show_eta=False)
             with Horizontal(id="scanning-row"):
-                yield Static("Scan", id="scanning-label")
+                yield Static("Scanning", id="scanning-label")
                 yield ProgressBar(total=100, id="scan-bar", show_eta=False)
             yield Static("", id="current-file")
             yield RichLog(id="scan-log", markup=True)
@@ -441,7 +441,7 @@ class ScanScreen(Screen[None]):
         self.query_one("#scan-title", Static).focus()
         self._draw_focus()
         log = self.query_one("#scan-log", RichLog)
-        log.write("Ready. ↑↓ move, Enter/Space toggle, Tab = actions, f = fingerprint, g = focus log")
+        log.write("Ready. ↑↓ move, Enter/Space toggle, Tab = actions, g = focus log")
         self._update_progress_totals()
 
     def _draw_focus(self) -> None:
@@ -574,17 +574,17 @@ class ScanScreen(Screen[None]):
             self.app.pop_screen()
 
     def watch_files_found(self, value: int) -> None:
-        self.query_one("#stat-found", Static).update(f"F {value:,}")
+        self.query_one("#stat-found", Static).update(f"Found {value:,}")
 
     def watch_files_scanned(self, value: int) -> None:
         total = max(self.files_found, 1)
-        self.query_one("#stat-scanned", Static).update(f"S {value:,}/{total:,}")
+        self.query_one("#stat-scanned", Static).update(f"Scanned {value:,}/{total:,}")
 
     def watch_files_skipped(self, value: int) -> None:
-        self.query_one("#stat-skipped", Static).update(f"K {value:,}")
+        self.query_one("#stat-skipped", Static).update(f"Skipped {value:,}")
 
     def watch_files_saved(self, value: int) -> None:
-        self.query_one("#stat-saved", Static).update(f"V {value:,}")
+        self.query_one("#stat-saved", Static).update(f"Saved {value:,}")
 
     def watch_current_file(self, value: str) -> None:
         display = Path(value).name if value else ""
@@ -774,14 +774,18 @@ class ScanScreen(Screen[None]):
         )
 
         total_to_scan = len(files_to_scan)
-        if total_to_scan == 0:
+        choices: dict[str, bool] = getattr(self, "_analysis_choices", {"duplicates": True})
+        analysis_phases = [k for k, v in choices.items() if v]
+        total_phases = total_to_scan + len(analysis_phases)
+
+        if total_to_scan == 0 and not analysis_phases:
             app.call_from_thread(log.write, "No new or changed files to scan.")
             app.call_from_thread(setattr, self, "is_scanning", False)
             app.call_from_thread(self.post_message, self.ScanComplete(saved=0))
             return
 
         app.call_from_thread(log.write, f"Scanning {total_to_scan:,} file(s)...")
-        app.call_from_thread(scan_bar.update, total=max(total_to_scan, 1))
+        app.call_from_thread(scan_bar.update, total=max(total_phases, 1))
 
         saved = 0
         corrupt_count = 0
@@ -830,17 +834,15 @@ class ScanScreen(Screen[None]):
                 app.call_from_thread(self._write_log_lines, log_batch[:])
                 log_batch.clear()
 
-        app.call_from_thread(setattr, self, "is_scanning", False)
         app.call_from_thread(
             log.write,
             f"Done. Saved {saved:,} file(s) — {saved - corrupt_count:,} valid, {corrupt_count:,} corrupt.",
         )
 
         # Run duplicate analysis after scan
-        choices: dict[str, bool] = getattr(self, "_analysis_choices", {"duplicates": True})
-
         if choices.get("duplicates", True):
             try:
+                app.call_from_thread(setattr, self, "current_file", "Analyzing content-hash duplicates...")
                 app.call_from_thread(log.write, "▸ Analyzing content-hash duplicates...")
                 groups = find_duplicate_groups(database)
                 if groups:
@@ -855,9 +857,12 @@ class ScanScreen(Screen[None]):
                     app.call_from_thread(log.write, "  No content-hash duplicates found.")
             except Exception as exc:
                 app.call_from_thread(log.write, f"ERROR: Duplicate analysis failed: {exc}")
+            finally:
+                app.call_from_thread(scan_bar.advance, 1)
 
         if choices.get("acoustid"):
             try:
+                app.call_from_thread(setattr, self, "current_file", "Analyzing AcoustID duplicates...")
                 app.call_from_thread(log.write, "▸ Analyzing AcoustID duplicates...")
                 ac_groups = find_acoustid_groups(database)
                 if ac_groups:
@@ -872,9 +877,12 @@ class ScanScreen(Screen[None]):
                     app.call_from_thread(log.write, "  No AcoustID duplicates found.")
             except Exception as exc:
                 app.call_from_thread(log.write, f"ERROR: AcoustID analysis failed: {exc}")
+            finally:
+                app.call_from_thread(scan_bar.advance, 1)
 
         if choices.get("transcodes"):
             try:
+                app.call_from_thread(setattr, self, "current_file", "Analyzing transcodes...")
                 app.call_from_thread(log.write, "▸ Analyzing transcodes...")
                 from soundaudit.analyzer.transcode import analyze_library_transcodes
                 def _tc_log(msg: str) -> None:
@@ -886,6 +894,8 @@ class ScanScreen(Screen[None]):
                 )
             except Exception as exc:
                 app.call_from_thread(log.write, f"ERROR: Transcode analysis failed: {exc}")
+            finally:
+                app.call_from_thread(scan_bar.advance, 1)
 
         if choices.get("resolve"):
             try:
@@ -927,7 +937,10 @@ class ScanScreen(Screen[None]):
             except Exception as exc:
                 app.call_from_thread(log.write, f"ERROR: MusicBrainz resolution failed: {exc}")
                 app.call_from_thread(setattr, self, "current_file", "")
+            finally:
+                app.call_from_thread(scan_bar.advance, 1)
 
+        app.call_from_thread(setattr, self, "is_scanning", False)
         app.call_from_thread(self.post_message, self.ScanComplete(saved=saved))
 
     def _write_log_lines(self, lines: list[str]) -> None:
