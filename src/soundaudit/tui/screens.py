@@ -19,7 +19,6 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     DataTable,
     Footer,
-    Header,
     Input,
     ProgressBar,
     RichLog,
@@ -73,7 +72,6 @@ class DashboardScreen(Screen[None]):
     _nav_index: reactive[int] = reactive(0)
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
         with Container(id="dashboard"):
             yield Static(
                 f"[b]SoundAudit[/b] [dim]v{__version__}[/dim]",
@@ -353,7 +351,6 @@ class ScanScreen(Screen[None]):
             super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield Header()
         with Container(id="scan-screen"):
             yield Static("[b]Scan[/b]  [dim]esc = back  f = fingerprint[/dim]", id="scan-title")
             with Vertical(id="path-list"):
@@ -986,7 +983,6 @@ class ReportScreen(Screen[None]):
     _tab_index: reactive[int] = reactive(0)
 
     def compose(self) -> ComposeResult:
-        yield Header()
         with Container(id="report-screen"):
             yield Static("[b]Reports[/b]", id="report-title")
             with Horizontal(id="report-tabs"):
@@ -1951,7 +1947,6 @@ class AnalyzerChooseScreen(Screen[dict[str, bool] | None]):
     OPTION_IDS: ClassVar[list[str]] = ["opt-duplicates", "opt-acoustid", "opt-transcodes"]
 
     def compose(self) -> ComposeResult:
-        yield Header()
         with Container(id="scan-screen"):
             yield Static("[b]Analyze[/b]  [dim]esc = back[/dim]", id="scan-title")
             yield Static("[dim]Toggle which analyses to run[/dim]", id="path-label")
@@ -2098,7 +2093,6 @@ class AnalyzerRunScreen(Screen[None]):
         super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield Header()
         with Container(id="scan-screen"):
             yield Static("[b]Running Analyses[/b]", id="scan-title")
             yield RichLog(id="scan-log", markup=True)
@@ -2216,7 +2210,6 @@ class FixTagsScreen(Screen[None]):
     }
 
     def compose(self) -> ComposeResult:
-        yield Header()
         with Container(id="scan-screen"):
             yield Static("[b]Fix Tags[/b]  [dim]esc = back[/dim]", id="scan-title")
             yield Static("[dim]Select paths and fields to update[/dim]", id="path-label")
@@ -2519,7 +2512,6 @@ class FixTagsRunScreen(Screen[None]):
         super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield Header()
         with Container(id="scan-screen"):
             status = "Preview" if self._dry_run else "Writing"
             yield Static(f"[b]{status} Tags[/b]  [dim]esc = back[/dim]", id="scan-title")
