@@ -331,7 +331,6 @@ class ScanScreen(Screen[None]):
     BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("escape", "cancel", "Cancel"),
-        ("f", "toggle_fingerprint", "Fingerprint"),
     ]
 
     # Reactive state
@@ -341,7 +340,6 @@ class ScanScreen(Screen[None]):
     files_saved: reactive[int] = reactive(0)
     current_file: reactive[str] = reactive("")
     is_scanning: reactive[bool] = reactive(False)
-    fingerprint_enabled: reactive[bool] = reactive(False)
 
     class ScanComplete(Message):
         """Emitted when scanning finishes."""
@@ -360,7 +358,6 @@ class ScanScreen(Screen[None]):
                 yield Static("S 0", id="stat-scanned")
                 yield Static("K 0", id="stat-skipped")
                 yield Static("V 0", id="stat-saved")
-                yield Static("FP [dim]off[/dim]", id="stat-fingerprint")
             with Horizontal(id="discovery-row"):
                 yield Static("Disc", id="discovery-label")
                 yield ProgressBar(total=100, id="discovery-bar", show_eta=False)
@@ -618,24 +615,6 @@ class ScanScreen(Screen[None]):
                         break
                 self._draw_focus()
 
-    def watch_fingerprint_enabled(self, value: bool) -> None:
-        node = self.query_one("#stat-fingerprint", Static)
-        if value:
-            node.update("FP [green]ON[/green]")
-        else:
-            node.update("FP [dim]off[/dim]")
-
-    def _toggle_fingerprint(self) -> None:
-        self.fingerprint_enabled = not self.fingerprint_enabled
-        log = self.query_one("#scan-log", RichLog)
-        log.write(
-            f"Fingerprint {'enabled' if self.fingerprint_enabled else 'disabled'}."
-        )
-
-    def action_toggle_fingerprint(self) -> None:
-        if not self.is_scanning:
-            self._toggle_fingerprint()
-
     def _update_progress_totals(self) -> None:
         scan_bar = self.query_one("#scan-bar", ProgressBar)
         scan_bar.total = max(self.files_found, 1)
@@ -811,7 +790,7 @@ class ScanScreen(Screen[None]):
             from soundaudit.scanner.extractor import extract_file_info
             return extract_file_info(
                 p,
-                fingerprint=getattr(self, "fingerprint_enabled", False),
+                fingerprint=False,
                 fpcalc_path=cfg.fingerprinting.fpcalc_path,
             )
 
