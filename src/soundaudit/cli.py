@@ -51,10 +51,17 @@ app = typer.Typer(
 console = Console()
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        console.print(f"SoundAudit {__version__}")
+        raise typer.Exit()
+
+
 @app.callback()
 def main_callback(
     verbose: int = typer.Option(0, "--verbose", "-v", count=True, help="Increase verbosity (-v, -vv)"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress non-error output"),
+    version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version and exit"),
 ) -> None:
     """Global options."""
     if quiet:
