@@ -715,6 +715,54 @@ def fix_cmd(
         console.print(f"\n[bold]Done.[/bold] {fixed} files updated, {skipped} unchanged, {errors} errors.")
 
 
+@app.command("clean-duplicates")
+def clean_duplicates_cmd(
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    db: Path | None = typer.Option(None, "--db"),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Actually delete files (default is dry-run preview)",
+    ),
+) -> None:
+    """Delete all files marked DELETE across duplicate groups, with preview by default."""
+    cfg = _load_config(config)
+    if db:
+        cfg.database.path = str(db)
+
+    database = Database(str(cfg.database.resolved()))
+    dry_run = not apply
+
+    from soundaudit.analyzer.duplicates import delete_all_marked_group_files
+
+    deleted, errors, bytes_freed = delete_all_marked_group_files(database, dry_run=dry_run, include_acoustid=True)
+
+    if dry_run:
+        if not deleted:
+            console.print("[green]No files marked DELETE across any groups.[/green]")
+            return
+        console.print(
+            f"[bold cyan]Preview[/bold cyan]: Would delete {len(deleted)} file(s), "
+            f"freeing {_human_size(bytes_freed)}."
+        )
+        for p in deleted:
+            console.print(f"  [dim]{p}[/dim]")
+        if errors:
+            console.print(f"\n[yellow]{len(errors)} errors during preview:[/yellow]")
+            for e in errors:
+                console.print(f"  [red]{e}[/red]")
+        console.print("\n[dim]Add --apply to actually delete these files.[/dim]")
+    else:
+        console.print(
+            f"[bold green]Deleted[/bold green] {len(deleted)} file(s), "
+            f"freed {_human_size(bytes_freed)}."
+        )
+        if errors:
+            console.print(f"[yellow]{len(errors)} errors:[/yellow]")
+            for e in errors:
+                console.print(f"  [red]{e}[/red]")
+
+
 def _auto_write_tags(
     database: Database,
     results: list[tuple[int, ResolvedMetadata]],
@@ -854,7 +902,7 @@ def _report_duplicates(
     from soundaudit.db.store import DBFile, DuplicateGroup
 
     with database.session() as s:
-        groups = s.query(DuplicateGroup).all()
+        groups = s.query(DuplicateGroup).filter_by(ignored=0).all()
 
     if not groups:
         if out_path:
@@ -1052,7 +1100,7 @@ def _report_acoustid_duplicates(
     out_format = out_format or (infer_format(out_path) if out_path else "console")
 
     with database.session() as s:
-        groups = s.query(AcoustidGroup).all()
+        groups = s.query(AcoustidGroup).filter_by(ignored=0).all()
 
     if not groups:
         msg = "[green]No AcoustID duplicate groups found.[/green]"

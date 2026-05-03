@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - Unreleased
+
+### Added
+- **Ignore duplicate groups from the TUI.** Press `i` on a duplicate group (Duplicates or AcoustID Dups tab) to mark it ignored — both files are kept and the group is hidden from reports. Ignored status survives re-analysis because the analyzer preserves the flag for unchanged hashes/fingerprints.
+- **Delete duplicate groups from the TUI.** Press `d` on a duplicate group to delete files marked `DELETE` in that group, with a confirmation modal showing exactly which files will be removed.
+- **Delete all marked duplicates from the TUI.** Press `D` (shift+d) on the Duplicates or AcoustID Dups tab to bulk-delete every file marked `DELETE` across all non-ignored groups, with a preview modal showing total count and space freed.
+- **CLI command `clean-duplicates`.** Run `soundaudit clean-duplicates` for a dry-run preview, or add `--apply` to actually delete all `DELETE`-marked files across content-hash and AcoustID groups.
+- Dashboard stats now show counts of ignored duplicate and AcoustID groups.
+
+### Fixed
+- TUI scan progress bar no longer gets stuck at 100% during long-running analysis phases.
+  - MusicBrainz resolve now drives the progress bar per-track via `on_total_known` / `per_item_callback` callbacks, resetting the bar to 0/N when resolution starts.
+  - Spectral transcode analysis (ffmpeg) now drives the progress bar per-file with the same callback pattern, and the label switches to "Transcodes N" during the phase.
+  - Labels update dynamically: "Scanning" → "Resolving 5912" / "Transcodes 3400" → "Scanning".
+
+### Changed
+- `MusicBrainzResolver.resolve_library()` and `analyze_library_transcodes()` now accept `on_total_known` and `per_item_callback` hooks for granular progress reporting.
+
+## [0.1.1] - 2026-04-30
+
+### Fixed
+- CI type-check step (`mypy`) cleaned up, all source files pass cleanly.
+- TUI keyboard navigation edge cases on FixTagsRunScreen.
+
+### Changed
+- Switched CI and local development to `uv` for faster installs and builds.
+
 ## [0.1.0] - 2026-04-30
 
 ### Added

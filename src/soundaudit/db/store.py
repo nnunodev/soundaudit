@@ -119,6 +119,7 @@ class DuplicateGroup(Base):  # type: ignore[valid-type,misc]
     id: Mapped[int] = mapped_column(primary_key=True)
     acoustid: Mapped[str | None] = mapped_column(String, index=True)
     group_type: Mapped[str] = mapped_column(String, default="content_hash")
+    ignored: Mapped[int] = mapped_column(Integer, default=0)
     created: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -129,6 +130,7 @@ class AcoustidGroup(Base):  # type: ignore[valid-type,misc]
 
     id: Mapped[int] = mapped_column(primary_key=True)
     fingerprint: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    ignored: Mapped[int] = mapped_column(Integer, default=0)
     created: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -170,6 +172,7 @@ class Database:
         # Auto-migrate tables to add any new columns since last version
         _migrate_table(self.engine, "files", DBFile)
         _migrate_table(self.engine, "duplicate_groups", DuplicateGroup)
+        _migrate_table(self.engine, "acoustid_groups", AcoustidGroup)
         _migrate_table(self.engine, "scan_history", ScanHistory)
         # Enable WAL for better concurrent reads
         event.listen(self.engine, "connect", _enable_wal)
@@ -291,6 +294,22 @@ class Database:
             row = s.query(DBFile).filter_by(id=file_id).first()
             if row:
                 row.tag_backup_json = json.dumps(backup, ensure_ascii=False)
+                s.commit()
+
+    def ignore_duplicate_group(self, group_id: int) -> None:
+        """Mark a duplicate group as ignored (user wants to keep both files)."""
+        with self.session() as s:
+            row = s.query(DuplicateGroup).filter_by(id=group_id).first()
+            if row:
+                row.ignored = 1
+                s.commit()
+
+    def ignore_acoustid_group(self, group_id: int) -> None:
+        """Mark an AcoustID group as ignored."""
+        with self.session() as s:
+            row = s.query(AcoustidGroup).filter_by(id=group_id).first()
+            if row:
+                row.ignored = 1
                 s.commit()
 
     def save_written_tags(self, file_id: int, tags: TrackTags, fields: set[str]) -> None:

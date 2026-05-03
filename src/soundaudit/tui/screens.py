@@ -177,7 +177,15 @@ class DashboardScreen(Screen[None]):
                     or 0
                 )
                 dup_groups = (
-                    s.query(func.count(DuplicateGroup.id)).scalar()
+                    s.query(func.count(DuplicateGroup.id))
+                    .filter_by(ignored=0)
+                    .scalar()
+                    or 0
+                )
+                dup_groups_ignored = (
+                    s.query(func.count(DuplicateGroup.id))
+                    .filter_by(ignored=1)
+                    .scalar()
                     or 0
                 )
                 dup_files = (
@@ -187,7 +195,16 @@ class DashboardScreen(Screen[None]):
                     or 0
                 )
                 acoustid_groups = (
-                    s.query(func.count(AcoustidGroup.id)).scalar() or 0
+                    s.query(func.count(AcoustidGroup.id))
+                    .filter_by(ignored=0)
+                    .scalar()
+                    or 0
+                )
+                acoustid_groups_ignored = (
+                    s.query(func.count(AcoustidGroup.id))
+                    .filter_by(ignored=1)
+                    .scalar()
+                    or 0
                 )
                 acoustid_files = (
                     s.query(func.count(DBFile.id))
@@ -241,9 +258,17 @@ class DashboardScreen(Screen[None]):
                 lines.append(
                     f"[b]Dups[/b]    : {dup_groups} groups, {dup_files} files"
                 )
+            if dup_groups_ignored:
+                lines.append(
+                    f"[dim]Ignored[/dim] : {dup_groups_ignored} dup groups"
+                )
             if acoustid_groups:
                 lines.append(
                     f"[b]AcoustID[/b]: {acoustid_groups} groups, {acoustid_files} files"
+                )
+            if acoustid_groups_ignored:
+                lines.append(
+                    f"[dim]Ignored[/dim] : {acoustid_groups_ignored} AcoustID groups"
                 )
             if transcode_count:
                 style = "[red]" if transcode_high > 0 else "[yellow]"
@@ -791,10 +816,11 @@ class ScanScreen(Screen[None]):
 
         total_to_scan = len(files_to_scan)
         choices: dict[str, bool] = getattr(self, "_analysis_choices", {"duplicates": True})
-        analysis_phases = [k for k, v in choices.items() if v]
-        total_phases = total_to_scan + len(analysis_phases)
+        has_resolve = choices.get("resolve", False)
+        other_phases = [k for k, v in choices.items() if v and k != "resolve"]
+        total_phases = total_to_scan + len(other_phases)
 
-        if total_to_scan == 0 and not analysis_phases:
+        if total_to_scan == 0 and not other_phases and not has_resolve:
             app.call_from_thread(log.write, "No new or changed files to scan.")
             app.call_from_thread(setattr, self, "is_scanning", False)
             app.call_from_thread(self.post_message, self.ScanComplete(saved=0))
@@ -903,15 +929,28 @@ class ScanScreen(Screen[None]):
                 from soundaudit.analyzer.transcode import analyze_library_transcodes
                 def _tc_log(msg: str) -> None:
                     app.call_from_thread(log.write, f"  {msg}")
+
+                def _on_tc_total(total: int) -> None:
+                    app.call_from_thread(
+                        self.query_one("#scanning-label", Static).update,
+                        f"Transcodes {total:,}"
+                    )
+                    app.call_from_thread(scan_bar.update, total=max(total, 1), progress=0)
+
                 analyze_library_transcodes(
                     database,
                     workers=4,
                     log_callback=_tc_log,
+                    on_total_known=_on_tc_total,
+                    per_item_callback=lambda: app.call_from_thread(scan_bar.advance, 1),
                 )
             except Exception as exc:
                 app.call_from_thread(log.write, f"ERROR: Transcode analysis failed: {exc}")
             finally:
-                app.call_from_thread(scan_bar.advance, 1)
+                app.call_from_thread(
+                    self.query_one("#scanning-label", Static).update,
+                    "Scanning"
+                )
 
         if choices.get("resolve"):
             try:
@@ -937,10 +976,19 @@ class ScanScreen(Screen[None]):
                         short = msg if len(msg) <= 55 else msg[:52] + "..."
                         app.call_from_thread(setattr, self, "current_file", short)
 
+                def _on_resolve_total(total: int) -> None:
+                    app.call_from_thread(
+                        self.query_one("#scanning-label", Static).update,
+                        f"Resolving {total:,}"
+                    )
+                    app.call_from_thread(scan_bar.update, total=max(total, 1), progress=0)
+
                 results = resolver.resolve_library(
                     dry_run=False,
                     force=False,
                     progress_callback=_resolve_progress,
+                    on_total_known=_on_resolve_total,
+                    per_item_callback=lambda: app.call_from_thread(scan_bar.advance, 1),
                 )
                 if results:
                     app.call_from_thread(
@@ -954,7 +1002,10 @@ class ScanScreen(Screen[None]):
                 app.call_from_thread(log.write, f"ERROR: MusicBrainz resolution failed: {exc}")
                 app.call_from_thread(setattr, self, "current_file", "")
             finally:
-                app.call_from_thread(scan_bar.advance, 1)
+                app.call_from_thread(
+                    self.query_one("#scanning-label", Static).update,
+                    "Scanning"
+                )
 
         app.call_from_thread(setattr, self, "current_file", "[green]Scan complete[/green]")
         app.call_from_thread(setattr, self, "is_scanning", False)
@@ -983,7 +1034,9 @@ class ReportScreen(Screen[None]):
         ("q", "quit", "Quit"),
         ("escape", "back", "Back"),
         ("s", "export", "Export"),
-        ("d", "delete_corrupt", "Delete corrupt"),
+        ("d", "delete_current", "Delete group"),
+        ("D", "delete_all", "Delete all marked"),
+        ("i", "ignore_group", "Ignore group"),
     ]
 
     TAB_IDS: ClassVar[list[str]] = [
@@ -1036,6 +1089,17 @@ class ReportScreen(Screen[None]):
         elif key == "d":
             if self.TAB_IDS[self._tab_index] == "tab-corrupt":
                 self._delete_corrupt_tab()
+            elif self.TAB_IDS[self._tab_index] in ("tab-duplicates", "tab-acoustid"):
+                self._delete_current_group()
+            event.stop()
+            return
+        elif key == "D":
+            if self.TAB_IDS[self._tab_index] in ("tab-duplicates", "tab-acoustid"):
+                self._delete_all_duplicates()
+            event.stop()
+            return
+        elif key == "i":
+            self._ignore_current_group()
             event.stop()
             return
         else:
@@ -1262,12 +1326,13 @@ class ReportScreen(Screen[None]):
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
         table.add_columns("Verdict", "File", "Album", "Tech", "Why")
+        self._dup_group_rows: dict[int, int] = {}
         app: Any = self.app
         try:
             database = Database(app.get_db_path())
             from soundaudit.db.store import DBFile, DuplicateGroup
             with database.session() as s:
-                groups = s.query(DuplicateGroup).all()
+                groups = s.query(DuplicateGroup).filter_by(ignored=0).all()
             if not groups:
                 table.add_row("—", "No duplicates found", "", "", "")
                 return
@@ -1294,6 +1359,8 @@ class ReportScreen(Screen[None]):
 
                 # Group header
                 header_style = "bold cyan"
+                row_idx = table.row_count
+                self._dup_group_rows[row_idx] = db_group.id
                 table.add_row(
                     Text(f"Grp {db_group.id}", style=header_style),
                     Text(f"{len(files)} files", style=header_style),
@@ -1325,12 +1392,13 @@ class ReportScreen(Screen[None]):
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
         table.add_columns("Verdict", "Type", "File", "Album", "Why")
+        self._acoustid_group_rows: dict[int, int] = {}
         app: Any = self.app
         try:
             database = Database(app.get_db_path())
             from soundaudit.db.store import AcoustidGroup, DBFile
             with database.session() as s:
-                groups = s.query(AcoustidGroup).all()
+                groups = s.query(AcoustidGroup).filter_by(ignored=0).all()
             if not groups:
                 table.add_row("—", "", "No AcoustID duplicates found", "", "")
                 return
@@ -1364,6 +1432,8 @@ class ReportScreen(Screen[None]):
                 if trans_count > 0:
                     dup_summary_parts.append(f"{trans_count} transcode")
 
+                row_idx = table.row_count
+                self._acoustid_group_rows[row_idx] = db_group.id
                 table.add_row(
                     Text(f"Grp {db_group.id}", style=header_style),
                     Text("", style=header_style),
@@ -1450,6 +1520,134 @@ class ReportScreen(Screen[None]):
         if sep > 0:
             prefix = prefix[: sep + 1]
         return [p[len(prefix) :] if p.startswith(prefix) else p for p in paths]
+
+    def _ignore_current_group(self) -> None:
+        """Mark the duplicate group under the cursor as ignored."""
+        tab = self.TAB_IDS[self._tab_index]
+        if tab not in ("tab-duplicates", "tab-acoustid"):
+            self.notify("Ignore only works on Duplicates or AcoustID Dups tabs.", severity="warning", timeout=3)
+            return
+
+        table = self.query_one("#report-table", DataTable)
+        cursor_row = table.cursor_coordinate.row
+        mapping = self._dup_group_rows if tab == "tab-duplicates" else self._acoustid_group_rows
+
+        group_id = None
+        for row_idx, gid in sorted(mapping.items(), reverse=True):
+            if row_idx <= cursor_row:
+                group_id = gid
+                break
+
+        if group_id is None:
+            self.notify("Move cursor to a duplicate group header and press [b]i[/b].", severity="warning", timeout=3)
+            return
+
+        app: Any = self.app
+        db = Database(app.get_db_path())
+        if tab == "tab-duplicates":
+            db.ignore_duplicate_group(group_id)
+            self._load_duplicates()
+        else:
+            db.ignore_acoustid_group(group_id)
+            self._load_acoustid()
+
+        self.notify(f"Group {group_id} ignored — both files will be kept.", severity="information", timeout=3)
+
+    def _delete_current_group(self) -> None:
+        """Delete files marked DELETE in the duplicate group under the cursor."""
+        tab = self.TAB_IDS[self._tab_index]
+        if tab not in ("tab-duplicates", "tab-acoustid"):
+            self.notify("Delete only works on Duplicates or AcoustID Dups tabs.", severity="warning", timeout=3)
+            return
+
+        table = self.query_one("#report-table", DataTable)
+        cursor_row = table.cursor_coordinate.row
+        mapping = self._dup_group_rows if tab == "tab-duplicates" else self._acoustid_group_rows
+
+        group_id = None
+        for row_idx, gid in sorted(mapping.items(), reverse=True):
+            if row_idx <= cursor_row:
+                group_id = gid
+                break
+
+        if group_id is None:
+            self.notify("Move cursor to a duplicate group and press [b]d[/b].", severity="warning", timeout=3)
+            return
+
+        # Dry-run to get preview
+        from soundaudit.analyzer.acoustid import delete_acoustid_group_files
+        from soundaudit.analyzer.duplicates import delete_duplicate_group_files
+
+        app: Any = self.app
+        db = Database(app.get_db_path())
+        if tab == "tab-duplicates":
+            to_delete, errors, _ = delete_duplicate_group_files(db, group_id, dry_run=True)
+        else:
+            to_delete, errors, _ = delete_acoustid_group_files(db, group_id, dry_run=True)
+
+        if not to_delete:
+            self.notify("No files marked DELETE in this group.", severity="information", timeout=3)
+            return
+
+        preview = "\n".join(f"  • {Path(p).name}" for p in to_delete[:5])
+        if len(to_delete) > 5:
+            preview += f"\n  ... and {len(to_delete) - 5} more"
+        msg = f"Delete {len(to_delete)} file(s) from Group {group_id}?\n{preview}"
+
+        def _do_delete(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            if tab == "tab-duplicates":
+                deleted, errs, _ = delete_duplicate_group_files(db, group_id, dry_run=False)
+                self._load_duplicates()
+            else:
+                deleted, errs, _ = delete_acoustid_group_files(db, group_id, dry_run=False)
+                self._load_acoustid()
+            self.notify(
+                f"Deleted {len(deleted)} file(s). {len(errs)} errors.",
+                severity="information" if not errs else "warning",
+                timeout=3,
+            )
+
+        self.app.push_screen(ConfirmDialog("Delete Group Files", msg, confirm_label="Delete"), _do_delete)
+
+    def _delete_all_duplicates(self) -> None:
+        """Delete all files marked DELETE across every non-ignored group."""
+        tab = self.TAB_IDS[self._tab_index]
+        if tab not in ("tab-duplicates", "tab-acoustid"):
+            return
+
+        from soundaudit.analyzer.duplicates import delete_all_marked_group_files
+
+        app: Any = self.app
+        db = Database(app.get_db_path())
+        to_delete, errors, total_bytes = delete_all_marked_group_files(
+            db, dry_run=True, include_acoustid=True
+        )
+
+        if not to_delete:
+            self.notify("No files marked DELETE across any groups.", severity="information", timeout=3)
+            return
+
+        def _do_delete_all(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            deleted, errs, _ = delete_all_marked_group_files(
+                db, dry_run=False, include_acoustid=True
+            )
+            self._load_duplicates()
+            self._load_acoustid()
+            self.notify(
+                f"Deleted {len(deleted)} file(s). {len(errs)} errors.",
+                severity="information" if not errs else "warning",
+                timeout=4,
+            )
+
+        msg = (
+            f"Delete {len(to_delete)} file(s) across all groups?\n"
+            f"This will free ~{_human_size(total_bytes)}."
+        )
+        self.app.push_screen(ConfirmDialog("Delete All Marked Duplicates", msg, confirm_label="Delete All"), _do_delete_all)
 
     def action_export(self) -> None:
         tab = self.TAB_IDS[self._tab_index]
@@ -1562,7 +1760,7 @@ class ReportScreen(Screen[None]):
         from soundaudit.db.store import DBFile, DuplicateGroup
         from soundaudit.reporter import MarkdownSection
         with db.session() as s:
-            groups = s.query(DuplicateGroup).all()
+            groups = s.query(DuplicateGroup).filter_by(ignored=0).all()
         group_data = []
         csv_rows = []
         md_sections = []
@@ -1605,7 +1803,7 @@ class ReportScreen(Screen[None]):
         from soundaudit.reporter import MarkdownSection
 
         with db.session() as s:
-            groups = s.query(AcoustidGroup).all()
+            groups = s.query(AcoustidGroup).filter_by(ignored=0).all()
 
         group_data: list[dict] = []
         csv_rows: list[dict] = []
@@ -1936,6 +2134,71 @@ class ExportDialog(ModalScreen[Path | None]):
             self._shortcut_idx = self._shortcut_ids().index(widget_id)
             self._apply_shortcut()
             event.stop()
+
+
+class ConfirmDialog(ModalScreen[bool]):
+    """Generic confirmation dialog with title, message, and Confirm/Cancel buttons."""
+
+    NAV_IDS: ClassVar[list[str]] = ["btn-cancel", "btn-confirm"]
+    _nav_index: reactive[int] = reactive(0)
+
+    def __init__(self, title: str, message: str, *, confirm_label: str = "Confirm") -> None:
+        self._title = title
+        self._message = message
+        self._confirm_label = confirm_label
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Static(f"[b]{self._title}[/b]", id="cd-title"),
+            Static(self._message, id="cd-message"),
+            Horizontal(
+                Static("▸ Cancel", id="btn-cancel", classes="nav-item"),
+                Static(f"▸ {self._confirm_label}", id="btn-confirm", classes="nav-item"),
+                id="cd-actions",
+            ),
+            id="cd-dialog",
+        )
+
+    def on_mount(self) -> None:
+        self._focus_nav()
+
+    def _focus_nav(self) -> None:
+        sel = self.NAV_IDS[self._nav_index]
+        self.query_one(f"#{sel}", Static).add_class("focused-nav").focus()
+
+    def _nav_move(self, delta: int) -> None:
+        old = self.NAV_IDS[self._nav_index]
+        self._nav_index = max(0, min(len(self.NAV_IDS) - 1, self._nav_index + delta))
+        new = self.NAV_IDS[self._nav_index]
+        if old != new:
+            self.query_one(f"#{old}", Static).remove_class("focused-nav")
+            self.query_one(f"#{new}", Static).add_class("focused-nav").focus()
+
+    def on_key(self, event) -> None:
+        key = event.key
+        if key in ("left", "up", "h", "k"):
+            self._nav_move(-1)
+        elif key in ("right", "down", "l", "j"):
+            self._nav_move(1)
+        elif key in ("enter", "space"):
+            self._nav_action()
+        elif key in ("escape", "q"):
+            self.dismiss(False)
+        else:
+            return
+        event.stop()
+
+    def _nav_action(self) -> None:
+        sel = self.NAV_IDS[self._nav_index]
+        self.dismiss(sel == "btn-confirm")
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id == "btn-confirm":
+            self.dismiss(True)
+        else:
+            self.dismiss(False)
 
 
 class AnalyzerChooseScreen(Screen[dict[str, bool] | None]):

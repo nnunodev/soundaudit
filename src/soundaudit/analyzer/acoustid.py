@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from rich.console import Console
 from sqlalchemy import func
@@ -88,9 +89,15 @@ def write_acoustid_groups(database, results: list[DuplicateGroupResult]) -> int:
     """Persist AcoustID groups and update files.acoustid_group_id.
 
     Clears old AcoustidGroup memberships first.
+    Preserves ignored status for fingerprints that were previously ignored.
     Returns number of groups written.
     """
     with database.session() as s:
+        # Collect ignored fingerprints before clearing
+        ignored_fps = {
+            g.fingerprint for g in s.query(AcoustidGroup).filter_by(ignored=1).all()
+        }
+
         # Clear existing
         s.query(DBFile).update(
             {"acoustid_group_id": None},
@@ -99,7 +106,10 @@ def write_acoustid_groups(database, results: list[DuplicateGroupResult]) -> int:
         s.query(AcoustidGroup).delete(synchronize_session=False)
 
         for result in results:
-            group = AcoustidGroup(fingerprint=result.content_hash)
+            group = AcoustidGroup(
+                fingerprint=result.content_hash,
+                ignored=int(result.content_hash in ignored_fps),
+            )
             s.add(group)
             s.flush()
 
@@ -186,3 +196,69 @@ class AcoustidDuplicateAnalyzer:
             self.console.print("[green]No AcoustID duplicates found.[/green]")
 
         return results
+
+
+def delete_acoustid_group_files(
+    database,
+    group_id: int,
+    *,
+    dry_run: bool = False,
+) -> tuple[list[str], list[str], int]:
+    """Delete files marked DELETE in a single AcoustID duplicate group.
+
+    Returns (deleted_paths, errors, bytes_freed).
+    If dry_run, returns what WOULD be deleted without touching disk.
+    """
+    from soundaudit.db.store import AcoustidGroup, DBFile
+
+    with database.session() as s:
+        db_group = s.query(AcoustidGroup).get(group_id)
+        if not db_group:
+            return [], ["Group not found"], 0
+        files = (
+            s.query(DBFile)
+            .filter_by(acoustid_group_id=group_id)
+            .order_by(DBFile.path)
+            .all()
+        )
+
+    if not files or len(files) < 2:
+        return [], ["Group has fewer than 2 files"], 0
+
+    from soundaudit.analyzer.duplicates import (
+        DuplicateGroupResult,
+    )
+
+    result = DuplicateGroupResult(
+        content_hash=db_group.fingerprint,
+        file_count=len(files),
+        total_size_bytes=sum(f.size_bytes for f in files),
+        files=files,
+        group_id=db_group.id,
+    )
+    verdict = analyze_acoustid_keepers(result)
+
+    deleted: list[str] = []
+    errors: list[str] = []
+    bytes_freed = 0
+
+    for fv in verdict.file_verdicts:
+        if fv.verdict.value != "DELETE":
+            continue
+        p = Path(fv.db_file.path)
+        if dry_run:
+            deleted.append(str(p))
+            bytes_freed += fv.db_file.size_bytes
+            continue
+        try:
+            if p.exists():
+                p.unlink()
+            deleted.append(str(p))
+            bytes_freed += fv.db_file.size_bytes
+        except OSError as exc:
+            errors.append(f"Failed to delete {p}: {exc}")
+
+    if deleted and not dry_run:
+        database.delete_by_paths(set(deleted))
+
+    return deleted, errors, bytes_freed

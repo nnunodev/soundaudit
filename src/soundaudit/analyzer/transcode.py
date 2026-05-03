@@ -300,6 +300,8 @@ def analyze_library_transcodes(
     workers: int = 4,
     console: Console | None = None,
     log_callback: Callable[[str], None] | None = None,
+    on_total_known: Callable[[int], None] | None = None,
+    per_item_callback: Callable[[], None] | None = None,
 ) -> list[SpectralResult]:
     """Batch spectral analysis over every file in the database.
 
@@ -324,6 +326,8 @@ def analyze_library_transcodes(
         return []
 
     msg = f"Analysing {len(rows)} lossless file(s) for spectral transcodes..."
+    if on_total_known:
+        on_total_known(len(rows))
     if log_callback:
         log_callback(msg)
     else:
@@ -345,6 +349,8 @@ def analyze_library_transcodes(
         for res in pool.map(_worker, rows):
             processed += 1
             results.append(res)
+            if per_item_callback:
+                per_item_callback()
             if processed % 10 == 0 or processed == total:
                 line = (
                     f"  {processed}/{total}  "

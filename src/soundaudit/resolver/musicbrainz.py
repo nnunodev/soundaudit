@@ -423,6 +423,8 @@ class MusicBrainzResolver:
         force: bool = False,
         workers: int = 1,
         progress_callback: Callable[[str], None] | None = None,
+        on_total_known: Callable[[int], None] | None = None,
+        per_item_callback: Callable[[], None] | None = None,
     ) -> list[tuple[int, ResolvedMetadata]]:
         """Batch-resolve all (or unresolved) files in the database."""
         from soundaudit.db.store import DBFile
@@ -448,6 +450,8 @@ class MusicBrainzResolver:
             return []
 
         total = len(files)
+        if total and on_total_known:
+            on_total_known(total)
         if progress_callback:
             progress_callback(f"Resolving {total} file(s) via MusicBrainz…")
         elif self.console:
@@ -478,6 +482,8 @@ class MusicBrainzResolver:
                     progress_callback(
                         f"  {idx}/{total}  ({resolved_count} resolved)"
                     )
+            if per_item_callback:
+                per_item_callback()
 
         if progress_callback:
             progress_callback(
