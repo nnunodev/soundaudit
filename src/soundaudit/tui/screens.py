@@ -587,16 +587,24 @@ class ScanScreen(Screen[None]):
         self.query_one("#stat-saved", Static).update(f"Saved {value:,}")
 
     def watch_current_file(self, value: str) -> None:
-        display = Path(value).name if value else ""
-        if display.startswith("[") and display.endswith("]"):
-            from rich.text import Text
-            self.query_one("#current-file", Static).update(
-                Text.from_markup(f"▸ {display}") if display else ""
-            )
-        else:
-            self.query_one("#current-file", Static).update(
-                f"▸ {display}" if display else ""
-            )
+        if not value:
+            self.query_one("#current-file", Static).update("")
+            return
+        # If the entire string is wrapped in a single markup tag, re-wrap
+        # the whole line (arrow + text) so the arrow inherits the colour.
+        if value.startswith("[") and value.endswith("]") and "[/" in value:
+            tag_end = value.index("]")
+            tag_name = value[1:tag_end].split()[0]
+            close_tag = f"[/{tag_name}]"
+            if value.endswith(close_tag):
+                inner = value[tag_end + 1 : -len(close_tag)]
+                self.query_one("#current-file", Static).update(
+                    f"[{tag_name}]▸ {inner}[/{tag_name}]"
+                )
+                return
+        # Plain text: escape brackets so they display literally
+        safe = value.replace("[", "\\[").replace("]", "\\]")
+        self.query_one("#current-file", Static).update(f"▸ {safe}")
 
     def watch_is_scanning(self, scanning: bool) -> None:
         start = self.query_one("#btn-start", Static)
@@ -677,6 +685,8 @@ class ScanScreen(Screen[None]):
         self.files_saved = 0
         self.current_file = ""
         self.is_scanning = True
+        self.query_one("#discovery-bar", ProgressBar).update(progress=0)
+        self.query_one("#scan-bar", ProgressBar).update(progress=0)
         log = self.query_one("#scan-log", RichLog)
         log.clear()
         log.write(f"Starting scan of {len(selected)} path(s)...")
@@ -834,7 +844,7 @@ class ScanScreen(Screen[None]):
                         log_batch.clear()
                 app.call_from_thread(setattr, self, "files_scanned", i + 1)
                 app.call_from_thread(scan_bar.advance, 1)
-                app.call_from_thread(setattr, self, "current_file", str(info.path))
+                app.call_from_thread(setattr, self, "current_file", Path(info.path).name)
 
             if log_batch:
                 app.call_from_thread(self._write_log_lines, log_batch[:])
