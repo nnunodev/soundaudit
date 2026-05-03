@@ -249,7 +249,7 @@ class DuplicateGroupResult:
     content_hash: str
     file_count: int
     total_size_bytes: int
-    files: list  # list of DBFile objects (may be detached)
+    files: list[DBFile]  # list of DBFile objects (may be detached)
     group_id: int | None = None
 
     @property
@@ -292,7 +292,7 @@ class DuplicateAnalyzer:
         return results
 
 
-def _human_size(size_bytes: int) -> str:
+def _human_size(size_bytes: int | float) -> str:
     """Convert bytes to human readable string."""
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(size_bytes) < 1024.0:

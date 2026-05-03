@@ -145,8 +145,6 @@ class ScanHistory(Base):  # type: ignore[valid-type,misc]
 
 def _migrate_table(engine, table_name: str, model_cls: type[Base]) -> None:
     """Add any columns present in the model but missing from the SQLite table."""
-    import sqlite3
-
     inspector = inspect(engine)
     if not inspector.has_table(table_name):
         return
@@ -155,7 +153,7 @@ def _migrate_table(engine, table_name: str, model_cls: type[Base]) -> None:
         if col.name not in existing:
             # SQLite ALTER TABLE ADD COLUMN cannot add PRIMARY KEY / UNIQUE / NOT NULL without default.
             # All our new columns are nullable, so this is safe.
-            col_type = col.type.compile(dialect=sqlite3.dialect())
+            col_type = col.type.compile(dialect=engine.dialect)
             with engine.begin() as conn:
                 conn.execute(
                     text(f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col_type}")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
+from typing import Any
 
 from mutagen import MutagenError
 from mutagen.apev2 import APEv2File
@@ -48,10 +49,10 @@ _VALID_FIELDS = frozenset(
 )
 
 
-def validate_fields(fields: set[str]) -> set[str]:
+def validate_fields(fields: set[str] | frozenset[str]) -> set[str]:
     """Return intersection with valid fields, warn about unknown."""
-    valid = fields & _VALID_FIELDS
-    invalid = fields - _VALID_FIELDS
+    valid = set(fields) & _VALID_FIELDS
+    invalid = set(fields) - _VALID_FIELDS
     if invalid:
         raise TagWriteError(f"Invalid fields: {', '.join(sorted(invalid))}")
     return valid
@@ -253,7 +254,7 @@ def _snapshot_ape(audio: APEv2File) -> dict[str, str | int | None]:
 
 def _snapshot_wave(audio: WAVE) -> dict[str, str | int | None]:
     # WAVE has limited tag support in mutagen; we snapshot what we can.
-    info = {}
+    info: dict[str, str] = {}
     if audio.tags:
         for key in ("Title", "Artist", "Album", "Genre", "Date"):
             val = audio.tags.get(key)
@@ -277,6 +278,7 @@ def _snapshot_wave(audio: WAVE) -> dict[str, str | int | None]:
 def snapshot_tags(path: Path) -> dict[str, str | int | None]:
     """Return a JSON-safe dict of current tag values."""
     suffix = path.suffix.lower()
+    audio: Any
     if suffix == ".flac":
         audio = FLAC(str(path))
         return _snapshot_flac_ogg(audio)
@@ -533,6 +535,7 @@ def write_tags(
 
     suffix = path.suffix.lower()
     try:
+        audio: Any
         if suffix == ".flac":
             audio = FLAC(str(path))
             _write_flac_ogg(audio, tags, write_fields)

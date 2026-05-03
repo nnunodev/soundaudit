@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -41,7 +42,6 @@ from soundaudit.analyzer.acoustid import (
     write_acoustid_groups,
 )
 from soundaudit.analyzer.duplicates import (
-    DuplicateAnalyzer,
     DuplicateGroupResult,
     KeeperVerdict,
     _human_size,
@@ -59,7 +59,7 @@ from soundaudit.scanner.walker import discover_files
 class DashboardScreen(Screen[None]):
     """Main dashboard with library overview."""
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("s", "scan", "Scan"),
         ("r", "report", "Report"),
@@ -139,7 +139,7 @@ class DashboardScreen(Screen[None]):
 
     def _refresh_stats(self) -> None:
         stats_widget = self.query_one("#stats", Static)
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         db_path = Path(app.get_db_path())
         if not db_path.exists():
             stats_widget.update(
@@ -288,10 +288,10 @@ class DashboardScreen(Screen[None]):
     def _confirm_reset(self) -> None:
         self.app.push_screen(ResetConfirmScreen(), self._do_reset)
 
-    def _do_reset(self, confirmed: bool) -> None:
+    def _do_reset(self, confirmed: bool | None) -> None:
         if not confirmed:
             return
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         db_path = Path(app.get_db_path())
         if not db_path.exists():
             self.notify("No database found to reset.", severity="warning", timeout=3)
@@ -330,7 +330,7 @@ class DashboardScreen(Screen[None]):
 class ScanScreen(Screen[None]):
     """Scan screen with loading and progress indicators."""
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("escape", "cancel", "Cancel"),
         ("f", "toggle_fingerprint", "Fingerprint"),
@@ -379,7 +379,7 @@ class ScanScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         cfg = app.get_config()
         full_paths = [str(p) for p in cfg.scan.paths]
         short_paths = ReportScreen._shorten_paths(full_paths)
@@ -432,12 +432,19 @@ class ScanScreen(Screen[None]):
         self._path_ids.extend(preset_ids)
         # strip focus from everything non-interactive except log (scrollable)
         self.query_one("#scan-log", Log).can_focus = True
-        self.query_one("#scan-title", Static).can_focus = False
+        # Use scan-title as keyboard focus anchor (not inside scrollable container)
+        self.query_one("#scan-title", Static).can_focus = True
         for sid in ("stat-found", "stat-scanned", "stat-skipped", "stat-saved",
                     "discovery-label", "scanning-label", "current-file", "path-label", "sep-presets"):
             node = self.query_one(f"#{sid}", Static)
             if node:
                 node.can_focus = False
+        # Make interactive items non-focusable so arrow keys bubble to screen handler
+        for pid in self._path_ids:
+            self.query_one(f"#{pid}", Static).can_focus = False
+        for bid in ("btn-start", "btn-stop", "btn-back"):
+            self.query_one(f"#{bid}", Static).can_focus = False
+        self.query_one("#scan-title", Static).focus()
         self._draw_focus()
         log = self.query_one("#scan-log", Log)
         log.write_line("Ready. ↑↓ move, Enter/Space toggle, Tab = actions, f = fingerprint, g = focus log")
@@ -700,7 +707,7 @@ class ScanScreen(Screen[None]):
 
     def _scan_worker(self) -> None:
         """Background worker that performs the scan."""
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         cfg = app.get_config()
         db_path = app.get_db_path()
         selected_paths: list[str] = getattr(self, "_selected_paths", cfg.scan.paths)
@@ -894,10 +901,12 @@ class ScanScreen(Screen[None]):
             try:
                 app.call_from_thread(log.write_line, "▸ Analyzing transcodes...")
                 from soundaudit.analyzer.transcode import analyze_library_transcodes
+                def _tc_log(msg: str) -> None:
+                    app.call_from_thread(log.write_line, f"  {msg}")
                 analyze_library_transcodes(
                     database,
                     workers=4,
-                    log_callback=lambda msg: app.call_from_thread(log.write_line, f"  {msg}"),
+                    log_callback=_tc_log,
                 )
             except Exception as exc:
                 app.call_from_thread(log.write_line, f"ERROR: Transcode analysis failed: {exc}")
@@ -964,7 +973,7 @@ class ScanScreen(Screen[None]):
 class ReportScreen(Screen[None]):
     """Report screen showing detailed reports."""
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("escape", "back", "Back"),
         ("s", "export", "Export"),
@@ -1084,7 +1093,7 @@ class ReportScreen(Screen[None]):
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
         table.add_columns("Metric", "Count")
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         try:
             database = Database(app.get_db_path())
             from sqlalchemy import func
@@ -1132,7 +1141,7 @@ class ReportScreen(Screen[None]):
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
         table.add_columns("File", "Missing")
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         try:
             database = Database(app.get_db_path())
             from soundaudit.db.store import DBFile
@@ -1165,7 +1174,7 @@ class ReportScreen(Screen[None]):
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
         table.add_columns("File", "MB Title", "Current Title", "Status")
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         try:
             database = Database(app.get_db_path())
             from soundaudit.db.store import DBFile
@@ -1195,7 +1204,7 @@ class ReportScreen(Screen[None]):
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
         table.add_columns("File", "Reason")
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         try:
             database = Database(app.get_db_path())
             from soundaudit.db.store import DBFile
@@ -1212,7 +1221,7 @@ class ReportScreen(Screen[None]):
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
         table.add_columns("Verdict", "File", "Album", "Tech", "Why")
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         try:
             database = Database(app.get_db_path())
             from soundaudit.db.store import DBFile, DuplicateGroup
@@ -1267,8 +1276,6 @@ class ReportScreen(Screen[None]):
                         f.album or ("Single" if "single" in f.path.lower().split(os.sep) else "—"),
                         fv.tech_summary,
                         ", ".join(fv.reasons[:3]),
-                        label=None,
-                        style=row_style,
                     )
         except Exception:
             table.add_row("Error", "Could not load duplicates", "", "", "")
@@ -1277,7 +1284,7 @@ class ReportScreen(Screen[None]):
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
         table.add_columns("Verdict", "Type", "File", "Album", "Why")
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         try:
             database = Database(app.get_db_path())
             from soundaudit.db.store import AcoustidGroup, DBFile
@@ -1308,7 +1315,7 @@ class ReportScreen(Screen[None]):
                 verdict = analyze_acoustid_keepers(group_result)
 
                 header_style = "bold cyan"
-                bfb_count = sum(1 for v in verdict.file_verdicts if v.dup_type == DupType.BIT_FOR_BIT)
+                bfb_count = sum(1 for v in verdict.file_verdicts if v.dup_type == DupType.BIT_FOR_BIT.value)
                 trans_count = len(verdict.file_verdicts) - bfb_count
                 dup_summary_parts: list[str] = []
                 if bfb_count > 1:
@@ -1332,20 +1339,18 @@ class ReportScreen(Screen[None]):
                         KeeperVerdict.REVIEW: "yellow",
                     }[fv.verdict]
                     type_style = {
-                        DupType.BIT_FOR_BIT: "green",
-                        DupType.TRANSCODE: "yellow",
-                    }[fv.dup_type]
+                        DupType.BIT_FOR_BIT.value: "green",
+                        DupType.TRANSCODE.value: "yellow",
+                    }.get(fv.dup_type, "white")
 
                     path = str(Path(f.path).name) if len(files) > 3 else str(Path(f.path))
                     album = f.album or ("Single" if "single" in f.path.lower().split(os.sep) else "—")
                     table.add_row(
-                        Text(fv.verdict.value, style=f"bold {row_style}"),
-                        Text(fv.dup_type.value, style=type_style),
+                        Text(str(fv.verdict), style=f"bold {row_style}"),
+                        Text(str(fv.dup_type), style=type_style),
                         path,
                         album,
                         ", ".join(fv.reasons[:3]),
-                        label=None,
-                        style=row_style,
                     )
         except Exception:
             table.add_row("Error", "", "Could not load AcoustID duplicates", "", "")
@@ -1354,7 +1359,7 @@ class ReportScreen(Screen[None]):
         table = self.query_one("#report-table", DataTable)
         table.clear(columns=True)
         table.add_columns("File", "Confidence", "Cutoff", "Reason")
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         try:
             database = Database(app.get_db_path())
             from soundaudit.db.store import DBFile
@@ -1378,9 +1383,9 @@ class ReportScreen(Screen[None]):
                     (0.4, 0.7): "[yellow]",
                 }
                 style = "[dim]"
-                for (lo, hi), s in conf_style.items():
+                for (lo, hi), style_code in conf_style.items():
                     if lo <= f.transcode_confidence <= hi:
-                        style = s
+                        style = style_code
                         break
                 cutoff = f"{f.spectral_cutoff_hz:,}Hz" if f.spectral_cutoff_hz else "—"
                 table.add_row(
@@ -1392,7 +1397,7 @@ class ReportScreen(Screen[None]):
         except Exception:
             table.add_row("Error", "", "", "Could not load transcodes")
 
-    def _human_size(self, size_bytes: int) -> str:
+    def _human_size(self, size_bytes: int | float) -> str:
         for unit in ("B", "KB", "MB", "GB", "TB"):
             if abs(size_bytes) < 1024.0:
                 return f"{size_bytes:.1f} {unit}"
@@ -1423,7 +1428,7 @@ class ReportScreen(Screen[None]):
     def _do_export(self, path: Path | None, tab: str) -> None:
         if path is None:
             return
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         db_path = app.get_db_path()
         try:
             from soundaudit.db.store import Database
@@ -1591,8 +1596,8 @@ class ReportScreen(Screen[None]):
                 f = fv.db_file
                 entry = {
                     "path": f.path,
-                    "verdict": fv.verdict.value,
-                    "dup_type": fv.dup_type.value,
+                    "verdict": str(fv.verdict),
+                    "dup_type": str(fv.dup_type),
                     "score": round(fv.score, 1),
                     "reasons": fv.reasons,
                     "album": f.album or "",
@@ -1605,8 +1610,8 @@ class ReportScreen(Screen[None]):
                 file_entries.append(entry)
                 csv_rows.append({"group_id": g.id, **entry})
                 md_rows.append([
-                    fv.verdict.value,
-                    fv.dup_type.value,
+                    str(fv.verdict),
+                    str(fv.dup_type),
                     str(Path(f.path).name),
                     f.album or "—",
                     ", ".join(fv.reasons[:3]),
@@ -1665,7 +1670,7 @@ class ReportScreen(Screen[None]):
         else:
             md_rows = [
                 [
-                    str(Path(r["file"]).name),
+                    str(Path(cast(str, r["file"])).name),
                     f"{r['confidence']:.0%}",
                     f"{r['cutoff_hz']:,}Hz" if r["cutoff_hz"] else "—",
                     r["reason"] or "—",
@@ -1674,7 +1679,7 @@ class ReportScreen(Screen[None]):
             ] if rows else []
             exporter.write_markdown(
                 "Transcode Suspects",
-                [MarkdownSection("Suspected Transcodes", ["File", "Confidence", "Cutoff", "Reason"], md_rows)],
+                [MarkdownSection("Suspected Transcodes", ["File", "Confidence", "Cutoff", "Reason"], cast(list[list[str]], md_rows))],
             )
 
     def _export_corrupt(self, db: Database, exporter, fmt: str) -> None:
@@ -1902,7 +1907,7 @@ class ExportDialog(ModalScreen[Path | None]):
 class AnalyzerChooseScreen(Screen[dict[str, bool] | None]):
     """Choose which analysis passes to run."""
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("escape", "cancel", "Back"),
     ]
@@ -1944,6 +1949,12 @@ class AnalyzerChooseScreen(Screen[dict[str, bool] | None]):
         self._opt_focus_idx: int = 0
         self._action_focus_idx: int = 0
         self._focus_group: str = "options"
+        for oid in self.OPTION_IDS:
+            self.query_one(f"#{oid}", Static).can_focus = False
+        for bid in ("btn-run", "btn-back"):
+            self.query_one(f"#{bid}", Static).can_focus = False
+        self.query_one("#scan-title", Static).can_focus = True
+        self.query_one("#scan-title", Static).focus()
         self._draw_focus()
 
     def _draw_focus(self) -> None:
@@ -2034,7 +2045,7 @@ class AnalyzerChooseScreen(Screen[dict[str, bool] | None]):
 class AnalyzerRunScreen(Screen[None]):
     """Show progress while running selected analysis passes."""
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("escape", "cancel", "Back"),
     ]
@@ -2067,14 +2078,14 @@ class AnalyzerRunScreen(Screen[None]):
         self.run_worker(self._worker, exclusive=True, thread=True)
 
     def _log(self, msg: str) -> None:
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         app.call_from_thread(
             self.query_one("#scan-log", Log).write_line,
             msg,
         )
 
     def _worker(self) -> None:
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         db_path = app.get_db_path()
         database = Database(db_path)
 
@@ -2082,7 +2093,6 @@ class AnalyzerRunScreen(Screen[None]):
             self._log("")
             self._log("[cyan]━ Content-Hash Duplicates ━[/cyan]")
             try:
-                analyzer = DuplicateAnalyzer(database)
                 groups = find_duplicate_groups(database)
                 if groups:
                     write_duplicate_groups(database, groups)
@@ -2101,8 +2111,8 @@ class AnalyzerRunScreen(Screen[None]):
             self._log("")
             self._log("[cyan]━ AcoustID Duplicates ━[/cyan]")
             try:
-                analyzer = AcoustidDuplicateAnalyzer(database)
-                groups = analyzer.run()
+                ac_analyzer = AcoustidDuplicateAnalyzer(database)
+                groups = ac_analyzer.run()
                 if groups:
                     total_wasted = sum(r.wasted_bytes for r in groups)
                     self._log(
@@ -2150,7 +2160,7 @@ class AnalyzerRunScreen(Screen[None]):
 class FixTagsScreen(Screen[None]):
     """Choose paths, fields, and run tag fixer."""
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("escape", "cancel", "Back"),
     ]
@@ -2183,7 +2193,7 @@ class FixTagsScreen(Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         cfg = app.get_config()
         full_paths = [str(p) for p in cfg.scan.paths]
         short_paths = ReportScreen._shorten_paths(full_paths)
@@ -2263,11 +2273,15 @@ class FixTagsScreen(Screen[None]):
             "opt-backup": True,
         }
 
+        for fid in self._focus_ids:
+            self.query_one(f"#{fid}", Static).can_focus = False
+        self.query_one("#scan-title", Static).can_focus = True
+        self.query_one("#scan-title", Static).focus()
         self._draw_focus()
         self._refresh_count()
 
     def _refresh_count(self) -> None:
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         selected_paths = [
             self._path_map[pid][0]
             for pid, sel in self._path_selected.items()
@@ -2303,9 +2317,8 @@ class FixTagsScreen(Screen[None]):
         for fid in self._focus_ids:
             self.query_one(f"#{fid}", Static).remove_class("focused-nav")
         current = self._focus_ids[self._focus_idx]
-        node = self.query_one(f"#{current}", Static)
-        node.add_class("focused-nav")
-        self.query_one("#path-list", Vertical).scroll_to_widget(node)
+        self.query_one(f"#{current}", Static).add_class("focused-nav")
+        self.query_one("#path-list", Vertical).scroll_to_widget(self.query_one(f"#{current}", Static))
 
     def _toggle_item(self, fid: str) -> None:
         if fid.startswith("fix-path-"):
@@ -2390,6 +2403,19 @@ class FixTagsScreen(Screen[None]):
                 self._focus_idx = list_len
             self._draw_focus()
             event.stop()
+        elif key in ("right", "l"):
+            if self._focus_group == "actions":
+                self._focus_idx = min(len(self._focus_ids) - 1, self._focus_idx + 1)
+            else:
+                self._focus_group = "actions"
+                self._focus_idx = list_len
+            self._draw_focus()
+            event.stop()
+        elif key in ("left", "h"):
+            if self._focus_group == "actions":
+                self._focus_idx = max(list_len, self._focus_idx - 1)
+            self._draw_focus()
+            event.stop()
         elif key in ("enter", "space"):
             fid = self._focus_ids[self._focus_idx]
             if fid == "btn-run":
@@ -2443,7 +2469,7 @@ class FixTagsScreen(Screen[None]):
 class FixTagsRunScreen(Screen[None]):
     """Show progress while writing tags."""
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("escape", "cancel", "Back"),
     ]
@@ -2478,14 +2504,14 @@ class FixTagsRunScreen(Screen[None]):
         self.run_worker(self._worker, exclusive=True, thread=True)
 
     def _log(self, msg: str) -> None:
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         app.call_from_thread(
             self.query_one("#scan-log", Log).write_line,
             msg,
         )
 
     def _worker(self) -> None:
-        app = self.app  # type: ignore[attr-defined]
+        app: Any = self.app
         try:
             db_path = app.get_db_path()
             database = Database(db_path)
@@ -2607,7 +2633,9 @@ class FixTagsRunScreen(Screen[None]):
         if self._focus_group == "actions":
             bids = ["btn-stop", "btn-back"]
             bid = bids[self._action_focus_idx]
-            self.query_one(f"#{bid}", Static).add_class("focused-nav")
+            node = self.query_one(f"#{bid}", Static)
+            node.add_class("focused-nav")
+            node.focus()
 
     def _refocus_action(self, delta: int) -> None:
         self._action_focus_idx = (self._action_focus_idx + delta) % 2

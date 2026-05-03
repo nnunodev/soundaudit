@@ -12,7 +12,8 @@ from soundaudit.fingerprint import (
 
 class TestFingerprintAvailable:
     def test_no_backends(self) -> None:
-        with patch("soundaudit.fingerprint._pyacoustid", None):
+        with patch("soundaudit.fingerprint._pyacoustid", None), \
+             patch("soundaudit.fingerprint.subprocess.run", side_effect=FileNotFoundError):
             avail, backend = fingerprint_available()
             assert avail is False
             assert backend == "none"

@@ -6,6 +6,7 @@ import contextlib
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
 import typer
 from rich.console import Console
@@ -252,7 +253,7 @@ def _report_summary(
         if out_format == "json":
             exporter.write_json(data)
         elif out_format == "csv":
-            exporter.write_csv([data["metrics"]])
+            exporter.write_csv([cast(dict[str, Any], data["metrics"])])
         else:
             sections = [
                 MarkdownSection(
@@ -691,6 +692,7 @@ def _auto_write_tags(
     """Write MusicBrainz-resolved tags back to files."""
     fixed = 0
     errors = 0
+    effective_fields = fields if fields is not None else set()
     for file_id, md in results:
         from soundaudit.db.store import DBFile
         with database.session() as s:
@@ -706,7 +708,7 @@ def _auto_write_tags(
             backup_snapshot = write_tags(path, tags, fields=fields, backup=backup)
             if backup:
                 database.save_tag_backup(file_id, backup_snapshot)
-            database.save_written_tags(file_id, tags, fields)
+            database.save_written_tags(file_id, tags, effective_fields)
             fixed += 1
         except TagWriteError as exc:
             console.print(f"[red]Auto-write failed for {path}: {exc}[/red]")
@@ -770,7 +772,7 @@ def _report_transcodes(
         else:
             md_rows = [
                 [
-                    str(Path(r["file"]).name),
+                    str(Path(cast(str, r["file"])).name),
                     f"{r['confidence']:.0%}",
                     r["reason"] or "—",
                     f"{r['cutoff_hz']:,}Hz" if r["cutoff_hz"] else "—",
@@ -779,7 +781,7 @@ def _report_transcodes(
             ]
             exporter.write_markdown(
                 "Transcode Suspects",
-                [MarkdownSection("Suspected Transcodes", ["File", "Confidence", "Reason", "Cutoff"], md_rows)],
+                [MarkdownSection("Suspected Transcodes", ["File", "Confidence", "Reason", "Cutoff"], cast(list[list[str]], md_rows))],
             )
         console.print(f"[green]Saved to {out_path}[/green]")
         return
@@ -796,9 +798,9 @@ def _report_transcodes(
             (0.4, 0.7): "[yellow]",
         }
         style = "[dim]"
-        for (lo, hi), s in conf_style.items():
+        for (lo, hi), style_code in conf_style.items():
             if lo <= f.transcode_confidence <= hi:
-                style = s
+                style = style_code
                 break
         cutoff = f"{f.spectral_cutoff_hz:,}Hz" if f.spectral_cutoff_hz else "—"
         table.add_row(
@@ -1274,7 +1276,7 @@ def _prompt_delete_acoustid(
                     console.print(f"[red]Failed to delete {fv.db_file.path}: {exc}[/red]")
 
 
-def _human_size(size_bytes: int) -> str:
+def _human_size(size_bytes: int | float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(size_bytes) < 1024.0:
             return f"{size_bytes:.1f} {unit}"

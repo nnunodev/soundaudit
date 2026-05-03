@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import contextlib
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import requests
 from rich.console import Console
@@ -77,7 +79,7 @@ class MusicBrainzClient:
                     time.sleep(backoff)
                     continue
                 resp.raise_for_status()
-                return resp.json()
+                return cast(dict[str, Any], resp.json())
             except requests.RequestException as exc:
                 if attempt < self.retry_count:
                     backoff = 2 ** attempt
@@ -292,13 +294,13 @@ class AcoustidLookupClient:
         try:
             resp = requests.get(
                 "https://api.acoustid.org/v2/lookup",
-                params={
+                params=cast(dict[str, str], {
                     "client": self.api_key,
                     "fingerprint": fingerprint,
-                    "duration": duration_sec,
+                    "duration": str(duration_sec),
                     "meta": "recordings",
                     "format": "json",
-                },
+                }),
                 timeout=30,
             )
             self._last_request = time.monotonic()
@@ -353,7 +355,7 @@ class MusicBrainzResolver:
         self,
         db_file,
         *,
-        progress_callback: object | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> ResolvedMetadata | None:
         """Resolve a single DBFile using ISRC → AcoustID → artist+title fallback."""
         # 1) ISRC → highest confidence
@@ -420,7 +422,7 @@ class MusicBrainzResolver:
         dry_run: bool = False,
         force: bool = False,
         workers: int = 1,
-        progress_callback: object | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> list[tuple[int, ResolvedMetadata]]:
         """Batch-resolve all (or unresolved) files in the database."""
         from soundaudit.db.store import DBFile

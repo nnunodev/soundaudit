@@ -24,11 +24,11 @@ SoundAudit scans your music library, extracts metadata, fingerprints audio, reso
 ## Quick Start
 
 ```bash
-# Install from PyPI (when published)
+# Install from PyPI
 pip install soundaudit
 
-# Or install from source
-pip install -e ".[dev]"
+# Or install from source with uv
+uv pip install -e ".[dev]"
 
 # Launch the interactive TUI (recommended)
 soundaudit tui

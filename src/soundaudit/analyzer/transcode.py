@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -298,7 +299,7 @@ def analyze_library_transcodes(
     lossless_only: bool = True,
     workers: int = 4,
     console: Console | None = None,
-    log_callback: object | None = None,
+    log_callback: Callable[[str], None] | None = None,
 ) -> list[SpectralResult]:
     """Batch spectral analysis over every file in the database.
 
