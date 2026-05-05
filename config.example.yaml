@@ -35,3 +35,14 @@ actuator:
   dry_run: true
   backup_before_write: true
   rename_template: "{artist}/{album} [{year}]/{disc:02d}-{track:02d}. {title}.flac"
+
+organize:
+  output_path: ~/Music/Navidrome
+  template: "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
+  move: true
+  extensions:
+    - .flac
+    - .mp3
+    - .m4a
+    - .ogg
+    - .wav

@@ -62,6 +62,13 @@ class ActuatorConfig(BaseModel):
     rename_template: str = "{artist}/{album} [{year}]/{disc:02d}-{track:02d}. {title}.flac"
 
 
+class OrganizeConfig(BaseModel):
+    output_path: str | None = None
+    template: str = "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
+    move: bool = True
+    extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a", ".ogg", ".wav"])
+
+
 class AppConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SOUNDAUDIT_",
@@ -74,6 +81,7 @@ class AppConfig(BaseSettings):
     fingerprinting: FingerprintConfig = Field(default_factory=FingerprintConfig)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
     actuator: ActuatorConfig = Field(default_factory=ActuatorConfig)
+    organize: OrganizeConfig = Field(default_factory=OrganizeConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path | None = None) -> AppConfig:

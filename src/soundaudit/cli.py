@@ -37,6 +37,7 @@ from soundaudit.analyzer.transcode import analyze_library_transcodes
 from soundaudit.config import AppConfig
 from soundaudit.db.store import AcoustidGroup, Database
 from soundaudit.models import HashStrategy
+from soundaudit.organizer import execute_organization, plan_organization
 from soundaudit.reporter import MarkdownSection, ReportExporter, infer_format
 from soundaudit.resolver.musicbrainz import ResolvedMetadata
 from soundaudit.scanner.walker import _shutdown, scan_directory
@@ -1354,6 +1355,153 @@ def _prompt_delete_acoustid(
                     console.print(f"[dim]Deleted {fv.db_file.path}[/dim]")
                 except OSError as exc:
                     console.print(f"[red]Failed to delete {fv.db_file.path}: {exc}[/red]")
+
+
+@app.command("organize")
+def organize_cmd(
+    paths: list[str] = typer.Argument(None, help="Source directories or files to organize"),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Navidrome library root directory (e.g. ~/Music/Navidrome)"),
+    template: str | None = typer.Option(None, "--template", "-t", help="Path template: {album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"),
+    apply: bool = typer.Option(False, "--apply", help="Actually move files (default is dry-run preview)"),
+    move: bool = typer.Option(True, "--move/--copy", help="Move (default) or copy files to the destination"),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
+    from_db: bool = typer.Option(False, "--from-db", help="Use already-scanned database files instead of filesystem paths"),
+    limit: int = typer.Option(0, "--limit", help="Maximum files to process (0 = unlimited)", min=0),
+) -> None:
+    """Rearrange downloads into Navidrome folder structure (Artist/Album/Track).
+
+    Reads embedded tags and builds a clean, collision-free destination path under
+    the Navidrome music root.  Runs in dry-run mode by default — add --apply to
+    actually move/copy the files.  After moving, database paths are updated
+    automatically so SoundAudit stays in sync.
+    """
+    cfg = _load_config(config)
+
+    out_root = Path(output).expanduser().resolve() if output else None
+    if out_root is None:
+        cfg_out = cfg.organize.output_path
+        if cfg_out:
+            out_root = Path(cfg_out).expanduser().resolve()
+    if out_root is None:
+        console.print("[red]No output directory set. Pass --output or set organize.output_path in config.yaml.[/red]")
+        raise typer.Exit(1)
+    if not out_root.exists():
+        console.print(f"[red]Output directory does not exist: {out_root}[/red]")
+        raise typer.Exit(1)
+
+    tmpl = template or cfg.organize.template or "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
+    extensions = set(cfg.organize.extensions)
+
+    source_paths: list[Path] = []
+    if from_db:
+        db_path = cfg.database.resolved()
+        database = Database(str(db_path))
+        from soundaudit.db.store import DBFile
+        with database.session() as s:
+            query = s.query(DBFile).filter(DBFile.is_corrupt == 0)
+            if limit > 0:
+                query = query.limit(limit)
+            files = query.all()
+            s.expunge_all()
+        for f in files:
+            p = Path(f.path)
+            if p.suffix.lower() in extensions:
+                source_paths.append(p)
+        console.print(f"[dim]Loaded {len(source_paths)} file(s) from database.[/dim]")
+    else:
+        if not paths:
+            paths = cfg.scan.paths
+        if not paths:
+            console.print("[red]No source paths provided. Pass directories/files as arguments or set scan.paths in config.yaml.[/red]")
+            raise typer.Exit(1)
+        for raw in paths:
+            p = Path(raw).expanduser().resolve()
+            if not p.exists():
+                console.print(f"[yellow]Skipping missing path: {p}[/yellow]")
+                continue
+            if p.is_file():
+                if p.suffix.lower() in extensions:
+                    source_paths.append(p)
+            else:
+                for child in p.rglob("*"):
+                    if child.is_file() and child.suffix.lower() in extensions:
+                        source_paths.append(child)
+        if limit > 0:
+            source_paths = source_paths[:limit]
+        console.print(f"[dim]Discovered {len(source_paths)} file(s) to organize.[/dim]")
+
+    if not source_paths:
+        console.print("[yellow]No files to organize.[/yellow]")
+        raise typer.Exit(0)
+
+    console.print(f"[bold cyan]Planning Navidrome organization…[/bold cyan]  output: {out_root}")
+    plans = plan_organization(source_paths, out_root, template=tmpl)
+
+    # Preview table
+    table = Table(title="Navidrome Organization Plan" + ("" if apply else "  [dim](dry-run)[/dim]"), show_header=True)
+    table.add_column("Source", style="dim", max_width=50)
+    table.add_column("Destination", style="green", max_width=50)
+    table.add_column("Status", width=10)
+
+    ok = 0
+    bad = 0
+    for plan in plans:
+        if plan.status == "error":
+            bad += 1
+            table.add_row(str(plan.source), str(plan.proposed), f"[red]error[/red]")
+        else:
+            ok += 1
+            short_src = str(plan.source)
+            short_dst = str(plan.proposed.relative_to(out_root))
+            table.add_row(short_src, short_dst, "[dim]ready[/dim]")
+
+    console.print(table)
+    console.print(f"\n{ok} ready, {bad} errors  —  {len(plans)} total")
+
+    if not apply:
+        console.print("\n[dim]Add --apply to execute these moves.[/dim]")
+        raise typer.Exit(0)
+
+    # Execute
+    executed = execute_organization(plans, dry_run=False, move=move)
+
+    moved = 0
+    copied = 0
+    errors = 0
+    already = 0
+    for plan in executed:
+        if plan.status == "moved":
+            moved += 1
+        elif plan.status == "copied":
+            copied += 1
+        elif plan.status == "already":
+            already += 1
+        elif plan.status == "error":
+            errors += 1
+            src = str(plan.source)
+            console.print(f"[red]Failed[/red] [dim]{src}[/dim]: {plan.error}")
+
+    parts = [f"[bold green]{moved} moved[/bold green]"] if moved else []
+    if copied:
+        parts.append(f"[green]{copied} copied[/green]")
+    if already:
+        parts.append(f"[dim]{already} already organized[/dim]")
+    if errors:
+        parts.append(f"[red]{errors} errors[/red]")
+    console.print(f"\nDone. {' | '.join(parts)}")
+
+    # Update DB paths for moved files
+    if from_db and (moved or copied):
+        db_path = cfg.database.resolved()
+        database = Database(str(db_path))
+        updated = 0
+        for plan in executed:
+            if plan.status in ("moved", "copied"):
+                if database.update_file_path(str(plan.source), str(plan.proposed)):
+                    updated += 1
+        console.print(f"[dim]Updated {updated} path(s) in database.[/dim]")
+
+
 
 
 def main() -> None:

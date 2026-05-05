@@ -163,10 +163,44 @@ def _extract_tags(audio) -> TrackTags:
     tags.publisher = _get("LABEL", "TPUB", "\xa9pub")
     tags.composer = _get("COMPOSER", "TCOM", "\xa9wrt")
 
-    tags.track_number = _parse_track(_get("TRACKNUMBER", "TRCK"))
-    tags.track_total = _parse_track_total(_get("TRACKNUMBER", "TRCK", "TRACKTOTAL"))
-    tags.disc_number = _parse_track(_get("DISCNUMBER", "TPOS"))
-    tags.disc_total = _parse_track_total(_get("DISCNUMBER", "TPOS", "DISCTOTAL"))
+    tags.track_number = _parse_track(_get("TRACKNUMBER", "TRCK", "TRACK"))
+    tags.track_total = _parse_track_total(_get("TRACKNUMBER", "TRCK", "TRACK", "TRACKTOTAL"))
+    tags.disc_number = _parse_track(_get("DISCNUMBER", "TPOS", "DISC"))
+    tags.disc_total = _parse_track_total(_get("DISCNUMBER", "TPOS", "DISC", "DISCTOTAL"))
+
+    # Format-specific numeric tags (MP4, APEv2)
+    if isinstance(audio, MP4):
+        trkn = audio.get("trkn")
+        if isinstance(trkn, list) and trkn and isinstance(trkn[0], tuple):
+            tags.track_number, tags.track_total = trkn[0]
+        disk = audio.get("disk")
+        if isinstance(disk, list) and disk and isinstance(disk[0], tuple):
+            tags.disc_number, tags.disc_total = disk[0]
+    elif isinstance(audio, APEv2File):
+        trk = audio.get("Track")
+        if trk:
+            parts = str(trk).split("/")
+            try:
+                tags.track_number = int(parts[0])
+            except ValueError:
+                pass
+            if len(parts) > 1:
+                try:
+                    tags.track_total = int(parts[1])
+                except ValueError:
+                    pass
+        disc_val = audio.get("Disc")
+        if disc_val:
+            parts = str(disc_val).split("/")
+            try:
+                tags.disc_number = int(parts[0])
+            except ValueError:
+                pass
+            if len(parts) > 1:
+                try:
+                    tags.disc_total = int(parts[1])
+                except ValueError:
+                    pass
 
     # ReplayGain
     tags.replaygain_track_gain = _parse_rg(_get("REPLAYGAIN_TRACK_GAIN"))

@@ -302,10 +302,85 @@ Screen {
     padding: 0 1;
 }
 
-/* Utility colour classes */
-.label-muted {
+/* Navidrome organize screen */
+#organize-screen {
+    width: auto;
+    min-width: 60;
+    max-width: 95vw;
+    height: auto;
+    max-height: 95vh;
+    padding: 0 1;
+}
+
+#organize-title {
+    height: auto;
+    text-align: center;
+    padding: 0 0;
+}
+
+#org-path-list {
+    height: auto;
+    max-height: 6;
+    overflow-y: auto;
+    padding: 0 1;
+    margin: 0 0;
+}
+
+#org-path-label {
+    height: auto;
+    padding: 0 0;
+    text-align: center;
     color: $text-muted;
 }
+
+#organize-output {
+    height: auto;
+    text-align: center;
+    padding: 0 0;
+    color: $text-muted;
+}
+
+#organize-log {
+    height: 1fr;
+    min-height: 4;
+    padding: 0 1;
+    border: solid $surface-lighten-1;
+}
+
+#organize-stats {
+    height: auto;
+    align: center middle;
+    padding: 0 0;
+}
+
+#organize-stats Static {
+    width: 1fr;
+    height: auto;
+    text-align: center;
+}
+
+#organize-actions {
+    dock: bottom;
+    height: auto;
+    align: center middle;
+    padding: 0 0;
+}
+
+#organize-actions Static {
+    width: auto;
+    min-width: 6;
+    text-align: center;
+    padding: 0 1;
+    height: auto;
+}
+
+#organize-current {
+    height: auto;
+    padding: 0 0;
+    text-align: center;
+    color: $success;
+}
+
 .label-bold {
     text-style: bold;
 }

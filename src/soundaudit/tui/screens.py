@@ -63,11 +63,12 @@ class DashboardScreen(Screen[None]):
         ("s", "scan", "Scan"),
         ("r", "report", "Report"),
         ("f", "fix", "Fix Tags"),
+        ("o", "organize", "Navidrome Org"),
         ("R", "reset", "Reset DB"),
     ]
 
     NAV_IDS: ClassVar[list[str]] = [
-        "btn-scan", "btn-report", "btn-fix", "btn-reset", "btn-quit"
+        "btn-scan", "btn-report", "btn-fix", "btn-organize", "btn-reset", "btn-quit"
     ]
     _nav_index: reactive[int] = reactive(0)
 
@@ -83,6 +84,7 @@ class DashboardScreen(Screen[None]):
                 yield Static("▸ Scan       [dim]s[/dim]", id="btn-scan", classes="nav-item")
                 yield Static("▸ Reports    [dim]r[/dim]", id="btn-report", classes="nav-item")
                 yield Static("▸ Fix Tags   [dim]f[/dim]", id="btn-fix", classes="nav-item")
+                yield Static("▸ Navidrome  [dim]o[/dim]", id="btn-organize", classes="nav-item")
                 yield Static("▸ Reset DB   [dim]R[/dim]", id="btn-reset", classes="nav-item")
                 yield Static("▸ Quit       [dim]q[/dim]", id="btn-quit", classes="nav-item")
         yield Footer()
@@ -130,6 +132,8 @@ class DashboardScreen(Screen[None]):
             self.action_report()
         elif wid == "btn-fix":
             self.action_fix()
+        elif wid == "btn-organize":
+            self.action_organize()
         elif wid == "btn-reset":
             self._confirm_reset()
         elif wid == "btn-quit":
@@ -303,6 +307,8 @@ class DashboardScreen(Screen[None]):
             self.action_report()
         elif widget_id == "btn-fix":
             self.action_fix()
+        elif widget_id == "btn-organize":
+            self.action_organize()
         elif widget_id == "btn-reset":
             self._confirm_reset()
         elif widget_id == "btn-quit":
@@ -342,6 +348,9 @@ class DashboardScreen(Screen[None]):
 
     def action_fix(self) -> None:
         self.app.push_screen(FixTagsScreen())
+
+    def action_organize(self) -> None:
+        self.app.push_screen("organize")
 
     def action_reset(self) -> None:
         self._confirm_reset()
@@ -977,18 +986,29 @@ class ScanScreen(Screen[None]):
                         app.call_from_thread(setattr, self, "current_file", short)
 
                 def _on_resolve_total(total: int) -> None:
+                    self._resolve_total = total
+                    self._resolve_done = 0
                     app.call_from_thread(
                         self.query_one("#scanning-label", Static).update,
-                        f"Resolving {total:,}"
+                        f"Resolving 0/{total:,}"
                     )
                     app.call_from_thread(scan_bar.update, total=max(total, 1), progress=0)
+
+                def _per_item() -> None:
+                    self._resolve_done += 1
+                    total = getattr(self, "_resolve_total", 1)
+                    app.call_from_thread(
+                        self.query_one("#scanning-label", Static).update,
+                        f"Resolving {self._resolve_done}/{total:,}"
+                    )
+                    app.call_from_thread(scan_bar.advance, 1)
 
                 results = resolver.resolve_library(
                     dry_run=False,
                     force=False,
                     progress_callback=_resolve_progress,
                     on_total_known=_on_resolve_total,
-                    per_item_callback=lambda: app.call_from_thread(scan_bar.advance, 1),
+                    per_item_callback=_per_item,
                 )
                 if results:
                     app.call_from_thread(
@@ -2999,6 +3019,392 @@ class FixTagsRunScreen(Screen[None]):
             self._running = False
             self._log("Cancelling...")
         else:
+            self.app.pop_screen()
+
+    def action_quit(self) -> None:
+        self.app.exit()
+
+
+class OrganizeScreen(Screen[None]):
+    """Navidrome folder-structure organizer screen.
+
+    Discovers files from selected filesystem paths (or from the DB) and moves
+    them into the configured Navidrome root using embedded tags.
+    """
+
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
+        ("q", "quit", "Quit"),
+        ("escape", "back", "Back"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="organize-screen"):
+            yield Static("[b]Navidrome Organizer[/b]  [dim]esc = back[/dim]", id="organize-title")
+            yield Static("", id="organize-output")
+            with Vertical(id="org-path-list"):
+                yield Static("[dim]Source paths[/dim]", id="org-path-label")
+            yield Static("", id="organize-current")
+            yield RichLog(id="organize-log", markup=True)
+            with Horizontal(id="organize-stats"):
+                yield Static("Files: 0", id="org-stat-files")
+                yield Static("Moved: 0", id="org-stat-moved")
+                yield Static("Errors: 0", id="org-stat-errors")
+            with Horizontal(id="organize-actions"):
+                yield Static("Start", id="btn-org-start", classes="scan-link")
+                yield Static("Stop", id="btn-org-stop", classes="scan-link dimmed")
+                yield Static("Back", id="btn-org-back", classes="scan-link")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        app: Any = self.app
+        cfg = app.get_config()
+        full_paths = [str(p) for p in cfg.scan.paths]
+        short_paths = ReportScreen._shorten_paths(full_paths)
+        self._path_map: dict[str, tuple[str, str]] = {}
+        self._path_selected: dict[str, bool] = {}
+        self._path_ids: list[str] = []
+        self._path_focus_idx: int = 0
+        self._action_focus_idx: int = 0
+        self._focus_group: str = "paths"
+        self._is_organizing = False
+        self._set_organizing(False)
+
+        path_list = self.query_one("#org-path-list", Vertical)
+        for idx, (full, short) in enumerate(zip(full_paths, short_paths, strict=False)):
+            pid = f"org-path-{idx}"
+            self._path_map[pid] = (full, short)
+            self._path_selected[pid] = True
+            self._path_ids.append(pid)
+            path_list.mount(
+                Static(
+                    f"[green]✓[/green] {short}",
+                    id=pid,
+                    classes="path-item checked",
+                )
+            )
+        # from-db toggle
+        path_list.mount(Static("", id="org-sep-toggle"))
+        self._path_ids.append("org-from-db")
+        self._from_db = False
+        path_list.mount(
+            Static(
+                "[dim]▸[/dim] Use database [dim](already scanned)[/dim]",
+                id="org-from-db",
+                classes="path-item unchecked",
+            )
+        )
+        # non-interactive items
+        for sid in ("org-path-label", "org-sep-toggle"):
+            node = self.query_one(f"#{sid}", Static)
+            if node:
+                node.can_focus = False
+        for pid in self._path_ids:
+            self.query_one(f"#{pid}", Static).can_focus = False
+        for bid in ("btn-org-start", "btn-org-stop", "btn-org-back"):
+            self.query_one(f"#{bid}", Static).can_focus = False
+        self.query_one("#organize-log", RichLog).can_focus = True
+        self.query_one("#organize-title", Static).can_focus = True
+        self.query_one("#organize-title", Static).focus()
+        # Show output path
+        app: Any = self.app
+        cfg = app.get_config()
+        out = cfg.organize.output_path or "[red]not set[/red]"
+        self.query_one("#organize-output", Static).update(f"[dim]→ {out}[/dim]")
+        self._draw_focus()
+        log = self.query_one("#organize-log", RichLog)
+        log.write("Navidrome folder organizer.")
+        log.write("↑↓ move, Enter/Space toggle, Tab = actions, g = focus log.")
+        log.write("Select source paths, then Start to move files into Navidrome structure.")
+
+    def _draw_focus(self) -> None:
+        for pid in self._path_ids:
+            self.query_one(f"#{pid}", Static).remove_class("focused-nav")
+        for bid in ("btn-org-start", "btn-org-stop", "btn-org-back"):
+            self.query_one(f"#{bid}", Static).remove_class("focused-nav")
+        if self._focus_group == "paths":
+            pid = self._path_ids[self._path_focus_idx]
+            self.query_one(f"#{pid}", Static).add_class("focused-nav")
+        else:
+            bids = ["btn-org-start", "btn-org-stop", "btn-org-back"]
+            bid = bids[self._action_focus_idx]
+            self.query_one(f"#{bid}", Static).add_class("focused-nav")
+
+    def _refocus_path(self, delta: int) -> None:
+        self._path_focus_idx = max(0, min(len(self._path_ids) - 1, self._path_focus_idx + delta))
+        self._focus_group = "paths"
+        self._draw_focus()
+        pid = self._path_ids[self._path_focus_idx]
+        node = self.query_one(f"#{pid}", Static)
+        self.query_one("#org-path-list", Vertical).scroll_to_widget(node)
+
+    def _refocus_action(self, delta: int) -> None:
+        self._action_focus_idx = max(0, min(2, self._action_focus_idx + delta))
+        self._focus_group = "actions"
+        self._draw_focus()
+
+    def _toggle_path(self, pid: str) -> None:
+        if pid == "org-from-db":
+            self._from_db = not self._from_db
+            node = self.query_one("#org-from-db", Static)
+            if self._from_db:
+                node.update("[green]▸[/green] Use database [dim](already scanned)[/dim]")
+                node.add_class("checked")
+                node.remove_class("unchecked")
+            else:
+                node.update("[dim]▸[/dim] Use database [dim](already scanned)[/dim]")
+                node.add_class("unchecked")
+                node.remove_class("checked")
+            return
+        full, short = self._path_map[pid]
+        was = self._path_selected[pid]
+        self._path_selected[pid] = not was
+        checked = self._path_selected[pid]
+        node = self.query_one(f"#{pid}", Static)
+        if checked:
+            node.update(f"[green]✓[/green] {short}")
+            node.add_class("checked")
+            node.remove_class("unchecked")
+        else:
+            node.update(f"[red]✗[/red] {short}")
+            node.add_class("unchecked")
+            node.remove_class("checked")
+
+    def on_key(self, event) -> None:
+        key = event.key
+        focused_wid = self.focused.id if self.focused else None
+        is_log_focused = focused_wid == "organize-log"
+
+        if is_log_focused and key in ("up", "down", "pageup", "pagedown"):
+            log = self.query_one("#organize-log", RichLog)
+            if key == "up":
+                log.scroll_up()
+            elif key == "down":
+                log.scroll_down()
+            elif key == "pageup":
+                log.scroll_page_up()
+            elif key == "pagedown":
+                log.scroll_page_down()
+            event.stop()
+            return
+
+        if key in ("up", "k"):
+            if self._focus_group == "paths":
+                self._refocus_path(-1)
+            event.stop()
+        elif key in ("down", "j"):
+            if self._focus_group == "paths":
+                self._refocus_path(1)
+            event.stop()
+        elif key == "tab":
+            if self._focus_group == "paths":
+                self._focus_group = "actions"
+            elif self._focus_group == "actions":
+                self._focus_group = "log"
+                self.query_one("#organize-log", RichLog).focus()
+            else:
+                self._focus_group = "paths"
+                self.query_one("#organize-log", RichLog).blur()
+            self._draw_focus()
+            event.stop()
+            return
+        elif key in ("left", "h"):
+            if self._focus_group == "actions":
+                self._refocus_action(-1)
+            elif self._focus_group == "log":
+                self._focus_group = "paths"
+                self.query_one("#organize-log", RichLog).blur()
+                self._draw_focus()
+            event.stop()
+        elif key in ("right", "l"):
+            if self._focus_group == "actions":
+                self._refocus_action(1)
+            event.stop()
+        elif key in ("enter", "space", "return"):
+            if self._focus_group == "paths":
+                pid = self._path_ids[self._path_focus_idx]
+                self._toggle_path(pid)
+            elif self._focus_group == "actions":
+                bids = ["btn-org-start", "btn-org-stop", "btn-org-back"]
+                bid = bids[self._action_focus_idx]
+                if bid == "btn-org-start" and not self._is_organizing:
+                    self._start_organize()
+                elif bid == "btn-org-stop" and self._is_organizing:
+                    self._set_organizing(False)
+                    self._log("Cancelling...")
+                elif bid == "btn-org-back" and not self._is_organizing:
+                    self.app.pop_screen()
+            event.stop()
+        else:
+            return
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id == "btn-org-start" and not self._is_organizing:
+            self._start_organize()
+        elif widget_id == "btn-org-stop" and self._is_organizing:
+            self._set_organizing(False)
+            self._log("Cancelling...")
+        elif widget_id == "btn-org-back" and not self._is_organizing:
+            self.app.pop_screen()
+        elif widget_id and widget_id in self._path_ids:
+            self._path_focus_idx = self._path_ids.index(widget_id)
+            self._focus_group = "paths"
+            self._draw_focus()
+            self._toggle_path(widget_id)
+            event.stop()
+
+    def _set_organizing(self, organizing: bool) -> None:
+        """Update running state and button dimming manually."""
+        self._is_organizing = organizing
+        start = self.query_one("#btn-org-start", Static)
+        stop = self.query_one("#btn-org-stop", Static)
+        back = self.query_one("#btn-org-back", Static)
+        if organizing:
+            start.add_class("dimmed")
+            stop.remove_class("dimmed")
+            back.add_class("dimmed")
+        else:
+            start.remove_class("dimmed")
+            stop.add_class("dimmed")
+            back.remove_class("dimmed")
+
+    def _log(self, msg: str) -> None:
+        self.query_one("#organize-log", RichLog).write(msg)
+
+    def _set_current(self, msg: str) -> None:
+        self.query_one("#organize-current", Static).update(msg)
+
+    def _start_organize(self) -> None:
+        app: Any = self.app
+        cfg = app.get_config()
+        out_root = None
+        if cfg.organize.output_path:
+            out_root = Path(cfg.organize.output_path).expanduser().resolve()
+        if out_root is None or not out_root.exists():
+            self._log("[red]No valid organize.output_path set in config.[/red]")
+            self._log("Set organize.output_path in your config.yaml (e.g. ~/Music/Navidrome)")
+            return
+
+        # Validate at least one source is selected
+        any_selected = any(sel for pid, sel in self._path_selected.items() if pid != "org-from-db")
+        if not self._from_db and not any_selected:
+            self._log("[yellow]No source paths selected. Toggle at least one path, or enable 'Use database'.[/yellow]")
+            return
+
+        self._set_organizing(True)
+        self._log(f"Output root: {out_root}")
+        if self._from_db:
+            self._log("Source: database (already scanned files)")
+        else:
+            selected = [self._path_map[pid][0] for pid, sel in self._path_selected.items() if sel]
+            self._log(f"Source paths: {', '.join(selected)}")
+        self.run_worker(self._organize_worker, exclusive=True, thread=True)
+
+    def _organize_worker(self) -> None:
+        from soundaudit.organizer import execute_organization, plan_organization
+        from soundaudit.db.store import DBFile
+        from soundaudit.scanner.walker import discover_files
+        app: Any = self.app
+        cfg = app.get_config()
+        out_root = Path(cfg.organize.output_path).expanduser().resolve()
+        tmpl = cfg.organize.template or "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
+        extensions = set(cfg.organize.extensions)
+        db_path = app.get_db_path()
+        database = Database(db_path)
+
+        try:
+            source_paths: list[Path] = []
+
+            if self._from_db:
+                with database.session() as s:
+                    files = (
+                        s.query(DBFile)
+                        .filter(DBFile.is_corrupt == 0)
+                        .all()
+                    )
+                    s.expunge_all()
+                for f in files:
+                    p = Path(f.path)
+                    if p.suffix.lower() in extensions:
+                        source_paths.append(p)
+                app.call_from_thread(self._log, f"Loaded {len(source_paths)} file(s) from database.")
+            else:
+                selected = [
+                    self._path_map[pid][0]
+                    for pid, sel in self._path_selected.items()
+                    if sel and pid != "org-from-db"
+                ]
+                for root_path in selected:
+                    root = Path(root_path).expanduser().resolve()
+                    if not root.exists():
+                        app.call_from_thread(self._log, f"[yellow]Skipping missing path: {root}[/yellow]")
+                        continue
+                    try:
+                        for p in discover_files(root, extensions):
+                            if not self._is_organizing:
+                                app.call_from_thread(self._log, "Cancelled during discovery.")
+                                return
+                            source_paths.append(p)
+                    except Exception as exc:
+                        app.call_from_thread(self._log, f"[red]Error in {root}: {exc}[/red]")
+                app.call_from_thread(self._log, f"Discovered {len(source_paths)} file(s) from filesystem.")
+
+            if not source_paths:
+                app.call_from_thread(self._log, "[yellow]No files to organize.[/yellow]")
+                return
+
+            plans = plan_organization(source_paths, out_root, template=tmpl)
+
+            ok = sum(1 for pl in plans if pl.status != "error")
+            bad = len(plans) - ok
+            app.call_from_thread(self._log, f"Plan ready: {ok} ok, {bad} errors.")
+            app.call_from_thread(
+                self.query_one("#org-stat-files", Static).update, f"Files: {len(plans)}"
+            )
+
+            def _on_move(plan) -> None:
+                app.call_from_thread(self._log, f"[green]Moved[/green] {plan.proposed.name}")
+
+            executed = execute_organization(plans, dry_run=False, move=cfg.organize.move, on_move=_on_move)
+
+            moved = copied = errors = already = 0
+            updated_db = 0
+            for plan in executed:
+                if plan.status == "moved":
+                    moved += 1
+                elif plan.status == "copied":
+                    copied += 1
+                elif plan.status == "already":
+                    already += 1
+                elif plan.status == "error":
+                    errors += 1
+                    if plan.error:
+                        # truncate very long paths for readability
+                        src = str(plan.source)
+                        app.call_from_thread(self._log, f"[red]Failed[/red] {src}: {plan.error}")
+                if plan.status in ("moved", "copied"):
+                    if database.update_file_path(str(plan.source), str(plan.proposed)):
+                        updated_db += 1
+
+            parts = [f"[bold green]{moved} moved[/bold green]"]
+            if copied:
+                parts.append(f"[green]{copied} copied[/green]")
+            if already:
+                parts.append(f"[dim]{already} already organized[/dim]")
+            if errors:
+                parts.append(f"[red]{errors} errors[/red]")
+            app.call_from_thread(self._log, f"Done. {' | '.join(parts)}")
+            app.call_from_thread(self._log, f"[dim]Updated {updated_db} path(s) in database.[/dim]")
+        except Exception as exc:
+            import traceback
+            app.call_from_thread(self._log, f"[red]CRASH: {exc}[/red]")
+            for line in traceback.format_exc().splitlines():
+                app.call_from_thread(self._log, f"[dim]{line}[/dim]")
+        finally:
+            app.call_from_thread(self._set_organizing, False)
+
+    def action_back(self) -> None:
+        if not self._is_organizing:
             self.app.pop_screen()
 
     def action_quit(self) -> None:

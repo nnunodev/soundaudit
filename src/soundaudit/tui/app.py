@@ -7,7 +7,13 @@ from pathlib import Path
 from textual.app import App
 
 from soundaudit.config import AppConfig
-from soundaudit.tui.screens import DashboardScreen, FixTagsScreen, ReportScreen, ScanScreen
+from soundaudit.tui.screens import (
+    DashboardScreen,
+    FixTagsScreen,
+    OrganizeScreen,
+    ReportScreen,
+    ScanScreen,
+)
 
 
 class SoundAuditApp(App[None]):
@@ -39,6 +45,7 @@ class SoundAuditApp(App[None]):
         "scan": ScanScreen,
         "report": ReportScreen,
         "fix": FixTagsScreen,
+        "organize": OrganizeScreen,
     }
 
     def on_mount(self) -> None:

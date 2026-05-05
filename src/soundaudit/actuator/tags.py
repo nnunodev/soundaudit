@@ -60,7 +60,7 @@ def validate_fields(fields: set[str] | frozenset[str]) -> set[str]:
 
 def _snapshot_tracknumber(audio) -> tuple[int | None, int | None]:
     """Extract track number / total from various tag formats."""
-    raw = audio.get("TRACKNUMBER")
+    raw = audio.get("TRACKNUMBER") or audio.get("TRACK")
     if not raw:
         return None, None
     val = raw[0] if isinstance(raw, list) else str(raw)

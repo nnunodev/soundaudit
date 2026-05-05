@@ -296,6 +296,16 @@ class Database:
                 row.tag_backup_json = json.dumps(backup, ensure_ascii=False)
                 s.commit()
 
+    def update_file_path(self, old_path: str, new_path: str) -> bool:
+        """Update a file's path in the database after moving on disk."""
+        with self.session() as s:
+            row = s.query(DBFile).filter_by(path=old_path).first()
+            if not row:
+                return False
+            row.path = new_path
+            s.commit()
+        return True
+
     def ignore_duplicate_group(self, group_id: int) -> None:
         """Mark a duplicate group as ignored (user wants to keep both files)."""
         with self.session() as s:
