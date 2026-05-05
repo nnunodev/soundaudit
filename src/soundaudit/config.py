@@ -14,7 +14,7 @@ from soundaudit.paths import find_config_file, get_config_dir, get_default_db_pa
 
 class ScanConfig(BaseModel):
     paths: list[str] = Field(default_factory=list)
-    extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a", ".ogg"])
+    extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv", ".aiff", ".aac"])
     workers: int = Field(default=4, ge=1, le=32)
     follow_symlinks: bool = False
     hash_strategy: HashStrategy = Field(default=HashStrategy.HEAD_ONLY)
@@ -66,7 +66,7 @@ class OrganizeConfig(BaseModel):
     output_path: str | None = None
     template: str = "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
     move: bool = True
-    extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a", ".ogg", ".wav"])
+    extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv", ".aiff", ".aac"])
 
 
 class AppConfig(BaseSettings):

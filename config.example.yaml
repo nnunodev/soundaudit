@@ -13,6 +13,11 @@ scan:
     - .mp3
     - .m4a
     - .ogg
+    - .wav
+    - .ape
+    - .wv
+    - .aiff
+    - .aac
   workers: 4
   follow_symlinks: false
   hash_strategy: head-only
@@ -46,3 +51,7 @@ organize:
     - .m4a
     - .ogg
     - .wav
+    - .ape
+    - .wv
+    - .aiff
+    - .aac

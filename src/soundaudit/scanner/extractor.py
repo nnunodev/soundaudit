@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from mutagen import MutagenError
@@ -180,27 +181,19 @@ def _extract_tags(audio) -> TrackTags:
         trk = audio.get("Track")
         if trk:
             parts = str(trk).split("/")
-            try:
+            with contextlib.suppress(ValueError):
                 tags.track_number = int(parts[0])
-            except ValueError:
-                pass
             if len(parts) > 1:
-                try:
+                with contextlib.suppress(ValueError):
                     tags.track_total = int(parts[1])
-                except ValueError:
-                    pass
         disc_val = audio.get("Disc")
         if disc_val:
             parts = str(disc_val).split("/")
-            try:
+            with contextlib.suppress(ValueError):
                 tags.disc_number = int(parts[0])
-            except ValueError:
-                pass
             if len(parts) > 1:
-                try:
+                with contextlib.suppress(ValueError):
                     tags.disc_total = int(parts[1])
-                except ValueError:
-                    pass
 
     # ReplayGain
     tags.replaygain_track_gain = _parse_rg(_get("REPLAYGAIN_TRACK_GAIN"))

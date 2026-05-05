@@ -14,7 +14,7 @@ from rich.progress import Progress
 from soundaudit.models import FileInfo, HashStrategy
 from soundaudit.scanner.extractor import extract_file_info
 
-DEFAULT_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv"}
+DEFAULT_EXTENSIONS = {".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv", ".aiff", ".aac"}
 
 _shutdown = threading.Event()
 
@@ -26,13 +26,13 @@ def _handle_sigint(signum: int, frame: object) -> None:
 signal.signal(signal.SIGINT, _handle_sigint)
 
 
-def discover_files(root: Path, extensions: set[str]) -> Iterator[Path]:
+def discover_files(root: Path, extensions: set[str], follow_symlinks: bool = False) -> Iterator[Path]:
     """Yield audio file paths recursively."""
     for entry in os.scandir(root):
         try:
-            if entry.is_dir(follow_symlinks=False):
-                yield from discover_files(Path(entry.path), extensions)
-            elif entry.is_file(follow_symlinks=False):
+            if entry.is_dir(follow_symlinks=follow_symlinks):
+                yield from discover_files(Path(entry.path), extensions, follow_symlinks=follow_symlinks)
+            elif entry.is_file(follow_symlinks=follow_symlinks):
                 ext = Path(entry.name).suffix.lower()
                 if ext in extensions:
                     yield Path(entry.path)
@@ -50,13 +50,14 @@ def scan_directory(
     hash_strategy: HashStrategy = HashStrategy.HEAD_ONLY,
     fingerprint: bool = False,
     fpcalc_path: str = "/usr/bin/fpcalc",
+    follow_symlinks: bool = False,
 ) -> Iterator[FileInfo]:
     """Yield FileInfo for each discovered audio file, using parallel extraction."""
     extensions = extensions or DEFAULT_EXTENSIONS
     existing = existing or {}
 
     # First pass: list all files
-    all_files = list(discover_files(root, extensions))
+    all_files = list(discover_files(root, extensions, follow_symlinks=follow_symlinks))
 
     # Filter: skip unchanged files (incremental scan)
     files_to_scan: list[Path] = []

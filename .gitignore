@@ -1,3 +1,7 @@
+# Agent context files (repo-local knowledge, do not commit)
+AGENTS.md
+ARCHITECTURE.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

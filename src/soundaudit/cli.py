@@ -149,6 +149,7 @@ def scan_cmd(
                 hash_strategy=cfg.scan.hash_strategy,
                 fingerprint=cfg.fingerprinting.enabled,
                 fpcalc_path=cfg.fingerprinting.fpcalc_path,
+                follow_symlinks=cfg.scan.follow_symlinks,
             ):
                 if _shutdown.is_set():
                     break
@@ -1448,7 +1449,7 @@ def organize_cmd(
     for plan in plans:
         if plan.status == "error":
             bad += 1
-            table.add_row(str(plan.source), str(plan.proposed), f"[red]error[/red]")
+            table.add_row(str(plan.source), str(plan.proposed), "[red]error[/red]")
         else:
             ok += 1
             short_src = str(plan.source)
@@ -1496,9 +1497,8 @@ def organize_cmd(
         database = Database(str(db_path))
         updated = 0
         for plan in executed:
-            if plan.status in ("moved", "copied"):
-                if database.update_file_path(str(plan.source), str(plan.proposed)):
-                    updated += 1
+            if plan.status in ("moved", "copied") and database.update_file_path(str(plan.source), str(plan.proposed)):
+                updated += 1
         console.print(f"[dim]Updated {updated} path(s) in database.[/dim]")
 
 

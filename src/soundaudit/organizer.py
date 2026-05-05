@@ -7,22 +7,24 @@ collision-free destination paths.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from mutagen import MutagenError
+from mutagen.aac import AAC
+from mutagen.aiff import AIFF
+from mutagen.apev2 import APEv2File
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
 from mutagen.oggvorbis import OggVorbis
 from mutagen.wave import WAVE
-from mutagen.apev2 import APEv2File
 
 from soundaudit.models import TrackTags
-
 
 # Characters unsafe on any common filesystem
 _UNSAFE_CHARS = re.compile(r'[<>|:"?*\\/\x00-\x1f]')
@@ -66,6 +68,8 @@ def _get_tags(path: Path) -> TrackTags:
         ".wav": WAVE,
         ".ape": APEv2File,
         ".wv": APEv2File,
+        ".aiff": AIFF,
+        ".aac": AAC,
     }
     cls = mutagen_map.get(suffix)
     if cls is None:
@@ -104,16 +108,12 @@ def _get_tags(path: Path) -> TrackTags:
     # Parse totals if present in slash notation (e.g. "3/12" or "1/2")
     trk = _get("TRACKNUMBER", "TRCK", "TRACK")
     if trk and "/" in str(trk):
-        try:
+        with contextlib.suppress(ValueError, IndexError):
             tags.track_total = int(str(trk).split("/")[1])
-        except (ValueError, IndexError):
-            pass
     disc = _get("DISCNUMBER", "TPOS")
     if disc and "/" in str(disc):
-        try:
+        with contextlib.suppress(ValueError, IndexError):
             tags.disc_total = int(str(disc).split("/")[1])
-        except (ValueError, IndexError):
-            pass
 
     # Format-specific numeric tags (MP4, APEv2)
     if isinstance(audio, MP4):
@@ -127,27 +127,19 @@ def _get_tags(path: Path) -> TrackTags:
         trk = audio.get("Track")
         if trk:
             parts = str(trk).split("/")
-            try:
+            with contextlib.suppress(ValueError):
                 tags.track_number = int(parts[0])
-            except ValueError:
-                pass
             if len(parts) > 1:
-                try:
+                with contextlib.suppress(ValueError):
                     tags.track_total = int(parts[1])
-                except ValueError:
-                    pass
         disc_val = audio.get("Disc")
         if disc_val:
             parts = str(disc_val).split("/")
-            try:
+            with contextlib.suppress(ValueError):
                 tags.disc_number = int(parts[0])
-            except ValueError:
-                pass
             if len(parts) > 1:
-                try:
+                with contextlib.suppress(ValueError):
                     tags.disc_total = int(parts[1])
-                except ValueError:
-                    pass
 
     return tags
 
@@ -168,10 +160,7 @@ def _apply_template(template: str, tags: TrackTags, fmt: str) -> Path:
     disc_total = tags.disc_total
 
     # Smart disc-track prefix: omit disc number for single-disc albums
-    if disc_total and disc_total > 1:
-        disc_track = f"{disc:02d}-{track:02d}"
-    else:
-        disc_track = f"{track:02d}"
+    disc_track = f"{disc:02d}-{track:02d}" if (disc_total and disc_total > 1) else f"{track:02d}"
 
     # Sanitize each path component
     parts = template.split("/")

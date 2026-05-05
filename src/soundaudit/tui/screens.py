@@ -3301,8 +3301,8 @@ class OrganizeScreen(Screen[None]):
         self.run_worker(self._organize_worker, exclusive=True, thread=True)
 
     def _organize_worker(self) -> None:
-        from soundaudit.organizer import execute_organization, plan_organization
         from soundaudit.db.store import DBFile
+        from soundaudit.organizer import execute_organization, plan_organization
         from soundaudit.scanner.walker import discover_files
         app: Any = self.app
         cfg = app.get_config()
@@ -3382,9 +3382,8 @@ class OrganizeScreen(Screen[None]):
                         # truncate very long paths for readability
                         src = str(plan.source)
                         app.call_from_thread(self._log, f"[red]Failed[/red] {src}: {plan.error}")
-                if plan.status in ("moved", "copied"):
-                    if database.update_file_path(str(plan.source), str(plan.proposed)):
-                        updated_db += 1
+                if plan.status in ("moved", "copied") and database.update_file_path(str(plan.source), str(plan.proposed)):
+                    updated_db += 1
 
             parts = [f"[bold green]{moved} moved[/bold green]"]
             if copied:
