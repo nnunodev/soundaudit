@@ -12,7 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Delete duplicate groups from the TUI.** Press `d` on a duplicate group to delete files marked `DELETE` in that group, with a confirmation modal showing exactly which files will be removed.
 - **Delete all marked duplicates from the TUI.** Press `D` (shift+d) on the Duplicates or AcoustID Dups tab to bulk-delete every file marked `DELETE` across all non-ignored groups, with a preview modal showing total count and space freed.
 - **CLI command `clean-duplicates`.** Run `soundaudit clean-duplicates` for a dry-run preview, or add `--apply` to actually delete all `DELETE`-marked files across content-hash and AcoustID groups.
+- Navidrome folder organizer (`organize` CLI command + TUI screen). Reads tags and restructures files into `Album Artist/Album [Year]/disc-track. Title.ext` with collision-safe naming, move or copy mode, and automatic DB path sync when using `--from-db`.
+- Expanded default audio format support: `.wv` (WavPack), `.aiff`, `.aac` — wired in scanner, extractor, and organizer.
+- `report` command now accepts `--delete-corrupt` to bulk-remove unreadable files from disk and database (mirrors TUI delete-corrupt feature).
+- Global `--version` / `-V` flag and `version` subcommand.
+- `follow_symlinks` scan option (default `false`) for libraries using symlinked folders.
+- `organize` config section (`output_path`, `template`, `move`, `extensions`) with full example in `config.example.yaml`.
+- Track/disc number parsing improved for FLAC (`TRACKNUMBER`), APE (`Track`), and M4A (`trkn`/`disk` tuples) fallback in `organizer._get_tags()`.
 - Dashboard stats now show counts of ignored duplicate and AcoustID groups.
+
+### Changed
+- Removed Header top bar from all TUI screens to reclaim vertical space.
+- Removed fingerprint toggle from TUI scan screen (use `--fingerprint` CLI flag instead).
+- TUI scan progress bar resets and uses a green arrow when complete; labels properly escape Rich markup.
 
 ### Fixed
 - TUI scan progress bar no longer gets stuck at 100% during long-running analysis phases.

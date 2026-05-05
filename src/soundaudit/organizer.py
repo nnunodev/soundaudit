@@ -141,6 +141,13 @@ def _get_tags(path: Path) -> TrackTags:
                 with contextlib.suppress(ValueError):
                     tags.disc_total = int(parts[1])
 
+    # Fallback: parse track number from filename (e.g. "01 - Title.flac")
+    if tags.track_number is None:
+        m = re.search(r"^\s*(\d{1,3})(?:\s*[-._\s]\s*|\s+)", path.stem)
+        if m:
+            with contextlib.suppress(ValueError):
+                tags.track_number = int(m.group(1))
+
     return tags
 
 
@@ -235,6 +242,7 @@ def execute_organization(
     *,
     dry_run: bool = True,
     move: bool = True,
+    skip_existing: bool = False,
     on_move: Callable[[OrganizePlan], None] | None = None,
 ) -> list[OrganizePlan]:
     """Execute (or preview) a list of move plans.
@@ -258,6 +266,10 @@ def execute_organization(
                 continue
         except OSError:
             pass  # can't determine samefile, proceed and let shutil decide
+
+        if skip_existing and plan.proposed.exists():
+            plan.status = "skipped"
+            continue
 
         dest = _resolve_collision(plan.proposed)
         plan.proposed = dest

@@ -1365,6 +1365,7 @@ def organize_cmd(
     template: str | None = typer.Option(None, "--template", "-t", help="Path template: {album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"),
     apply: bool = typer.Option(False, "--apply", help="Actually move files (default is dry-run preview)"),
     move: bool = typer.Option(True, "--move/--copy", help="Move (default) or copy files to the destination"),
+    skip_existing: bool = typer.Option(True, "--skip-existing/--no-skip-existing", help="Skip when destination file already exists (default: skip)"),
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
     from_db: bool = typer.Option(False, "--from-db", help="Use already-scanned database files instead of filesystem paths"),
     limit: int = typer.Option(0, "--limit", help="Maximum files to process (0 = unlimited)", min=0),
@@ -1378,16 +1379,22 @@ def organize_cmd(
     """
     cfg = _load_config(config)
 
-    out_root = Path(output).expanduser().resolve() if output else None
+    out_root = None
+    if output:
+        try:
+            out_root = Path(output).expanduser().resolve()
+        except OSError:
+            out_root = Path(output).expanduser()
     if out_root is None:
         cfg_out = cfg.organize.output_path
         if cfg_out:
-            out_root = Path(cfg_out).expanduser().resolve()
+            # already expanduser()'d by OrganizeConfig validator
+            out_root = Path(cfg_out)
     if out_root is None:
         console.print("[red]No output directory set. Pass --output or set organize.output_path in config.yaml.[/red]")
         raise typer.Exit(1)
     if not out_root.exists():
-        console.print(f"[red]Output directory does not exist: {out_root}[/red]")
+        console.print(f"[red]Output directory does not exist or is unreachable: {out_root}[/red]")
         raise typer.Exit(1)
 
     tmpl = template or cfg.organize.template or "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
@@ -1464,12 +1471,13 @@ def organize_cmd(
         raise typer.Exit(0)
 
     # Execute
-    executed = execute_organization(plans, dry_run=False, move=move)
+    executed = execute_organization(plans, dry_run=False, move=move, skip_existing=skip_existing)
 
     moved = 0
     copied = 0
     errors = 0
     already = 0
+    skipped = 0
     for plan in executed:
         if plan.status == "moved":
             moved += 1
@@ -1477,6 +1485,8 @@ def organize_cmd(
             copied += 1
         elif plan.status == "already":
             already += 1
+        elif plan.status == "skipped":
+            skipped += 1
         elif plan.status == "error":
             errors += 1
             src = str(plan.source)
@@ -1487,6 +1497,8 @@ def organize_cmd(
         parts.append(f"[green]{copied} copied[/green]")
     if already:
         parts.append(f"[dim]{already} already organized[/dim]")
+    if skipped:
+        parts.append(f"[yellow]{skipped} skipped[/yellow]")
     if errors:
         parts.append(f"[red]{errors} errors[/red]")
     console.print(f"\nDone. {' | '.join(parts)}")

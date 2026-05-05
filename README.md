@@ -1,6 +1,6 @@
 # SoundAudit
 
-A Python-based music library health scanner and metadata repair tool for FLAC/MP3/OGG/M4A collections.
+A Python-based music library health scanner and metadata repair tool for FLAC/MP3/M4A/OGG/WAV/APE/WV/AIFF/AAC collections.
 
 > ⚠️ **Beta — work in progress.** Expect rough edges and breaking changes. Back up your library before using the tag writeback features (`fix --apply`, `resolve --auto-write`).
 
@@ -8,7 +8,7 @@ A Python-based music library health scanner and metadata repair tool for FLAC/MP
 
 SoundAudit scans your music library, extracts metadata, fingerprints audio, resolves canonical tags via MusicBrainz, detects transcodes and duplicates, then writes corrections back to your files all via terminal UI or scriptable CLI.
 
-**Supported formats:** FLAC, MP3, M4A, OGG, WAVE, APE
+**Supported formats:** FLAC, MP3, M4A, OGG, WAVE, APE, WV (WavPack), AIFF, AAC
 
 | Feature | |
 |---------|---|
@@ -18,6 +18,7 @@ SoundAudit scans your music library, extracts metadata, fingerprints audio, reso
 | Spectral transcode detection (fake-FLAC) | ✅ |
 | MusicBrainz metadata resolver | ✅ |
 | Tag writeback with original backup | ✅ |
+| Navidrome folder organizer | ✅ |
 | Interactive TUI + JSON/CSV/Markdown export | ✅ |
 
 ## Quick Start
@@ -51,7 +52,17 @@ soundaudit report --missing-tags               # incomplete metadata
 soundaudit report --duplicates                 # duplicate groups with keeper recommendations
 soundaudit report --transcodes                 # suspected fake-FLAC
 soundaudit report --corrupt                    # unreadable files
+soundaudit report --corrupt --delete-corrupt   # delete corrupt files
 soundaudit report --duplicates -o dups.json    # export to JSON
+
+# Navidrome Organizer (dry-run by default)
+soundaudit organize ~/Downloads --output ~/Music/Navidrome
+soundaudit organize --from-db --output ~/Music/Navidrome --apply --move
+soundaudit organize ~/Downloads --output ~/Music/Navidrome --apply --copy
+
+# Duplicate Cleanup
+soundaudit clean-duplicates                    # preview deletions
+soundaudit clean-duplicates --apply             # delete all DELETE-marked files
 
 # Analysis passes (on already-scanned data)
 soundaudit analyze --duplicates                # content-hash dups
@@ -82,8 +93,9 @@ Create `config.yaml` in your platform config directory (e.g. `~/.config/soundaud
 scan:
   paths:
     - ~/Music
-  extensions: [".flac", ".mp3", ".m4a"]
+  extensions: [".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv", ".aiff", ".aac"]
   workers: 4
+  follow_symlinks: false
   hash_strategy: head-only
 
 fingerprinting:
@@ -94,6 +106,12 @@ fingerprinting:
 resolvers:
   rate_limit: 1.0
   retry_count: 3
+
+organize:
+  output_path: ~/Music/Navidrome
+  template: "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
+  move: true
+  extensions: [".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv", ".aiff", ".aac"]
 ```
 
 ```bash

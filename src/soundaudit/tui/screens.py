@@ -3048,6 +3048,7 @@ class OrganizeScreen(Screen[None]):
             with Horizontal(id="organize-stats"):
                 yield Static("Files: 0", id="org-stat-files")
                 yield Static("Moved: 0", id="org-stat-moved")
+                yield Static("Skipped: 0", id="org-stat-skipped")
                 yield Static("Errors: 0", id="org-stat-errors")
             with Horizontal(id="organize-actions"):
                 yield Static("Start", id="btn-org-start", classes="scan-link")
@@ -3279,10 +3280,16 @@ class OrganizeScreen(Screen[None]):
         cfg = app.get_config()
         out_root = None
         if cfg.organize.output_path:
-            out_root = Path(cfg.organize.output_path).expanduser().resolve()
-        if out_root is None or not out_root.exists():
-            self._log("[red]No valid organize.output_path set in config.[/red]")
+            try:
+                out_root = Path(cfg.organize.output_path).expanduser().resolve()
+            except OSError:
+                out_root = Path(cfg.organize.output_path)  # already expanduser()'d by config validator
+        if out_root is None:
+            self._log("[red]organize.output_path is not set in config.[/red]")
             self._log("Set organize.output_path in your config.yaml (e.g. ~/Music/Navidrome)")
+            return
+        if not out_root.exists():
+            self._log(f"[red]Output path does not exist or is unreachable: {out_root}[/red]")
             return
 
         # Validate at least one source is selected
@@ -3306,7 +3313,7 @@ class OrganizeScreen(Screen[None]):
         from soundaudit.scanner.walker import discover_files
         app: Any = self.app
         cfg = app.get_config()
-        out_root = Path(cfg.organize.output_path).expanduser().resolve()
+        out_root = Path(cfg.organize.output_path)  # already expanduser()'d by config validator
         tmpl = cfg.organize.template or "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
         extensions = set(cfg.organize.extensions)
         db_path = app.get_db_path()
@@ -3365,9 +3372,9 @@ class OrganizeScreen(Screen[None]):
             def _on_move(plan) -> None:
                 app.call_from_thread(self._log, f"[green]Moved[/green] {plan.proposed.name}")
 
-            executed = execute_organization(plans, dry_run=False, move=cfg.organize.move, on_move=_on_move)
+            executed = execute_organization(plans, dry_run=False, move=cfg.organize.move, skip_existing=True, on_move=_on_move)
 
-            moved = copied = errors = already = 0
+            moved = copied = errors = already = skipped = 0
             updated_db = 0
             for plan in executed:
                 if plan.status == "moved":
@@ -3376,6 +3383,8 @@ class OrganizeScreen(Screen[None]):
                     copied += 1
                 elif plan.status == "already":
                     already += 1
+                elif plan.status == "skipped":
+                    skipped += 1
                 elif plan.status == "error":
                     errors += 1
                     if plan.error:
@@ -3390,10 +3399,21 @@ class OrganizeScreen(Screen[None]):
                 parts.append(f"[green]{copied} copied[/green]")
             if already:
                 parts.append(f"[dim]{already} already organized[/dim]")
+            if skipped:
+                parts.append(f"[yellow]{skipped} skipped[/yellow]")
             if errors:
                 parts.append(f"[red]{errors} errors[/red]")
             app.call_from_thread(self._log, f"Done. {' | '.join(parts)}")
             app.call_from_thread(self._log, f"[dim]Updated {updated_db} path(s) in database.[/dim]")
+            app.call_from_thread(
+                self.query_one("#org-stat-moved", Static).update, f"Moved: {moved}"
+            )
+            app.call_from_thread(
+                self.query_one("#org-stat-skipped", Static).update, f"Skipped: {skipped}"
+            )
+            app.call_from_thread(
+                self.query_one("#org-stat-errors", Static).update, f"Errors: {errors}"
+            )
         except Exception as exc:
             import traceback
             app.call_from_thread(self._log, f"[red]CRASH: {exc}[/red]")

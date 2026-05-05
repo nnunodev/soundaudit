@@ -68,6 +68,15 @@ class OrganizeConfig(BaseModel):
     move: bool = True
     extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv", ".aiff", ".aac"])
 
+    @field_validator("output_path")
+    @classmethod
+    def validate_output_path(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        # expanduser only — do NOT resolve here; resolve() breaks UNC paths
+        # and paths that are not yet reachable at config-load time.
+        return str(Path(v).expanduser())
+
 
 class AppConfig(BaseSettings):
     model_config = SettingsConfigDict(
