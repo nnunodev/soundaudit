@@ -426,14 +426,25 @@ def plan_organization(
         existing_counts: dict[Path, int] = {}
         for album_dir in album_dir_groups:
             count = 0
-            if album_dir.exists():
+            exists = album_dir.exists()
+            if exists:
                 for child in album_dir.iterdir():
                     if child.is_file() and child.suffix.lower() in _audio_exts:
                         count += 1
             existing_counts[album_dir] = count
+            import logging
+            logging.getLogger("soundaudit.organizer").debug(
+                "min_album_tracks debug: album_dir=%s exists=%s existing_tracks=%s",
+                album_dir, exists, count,
+            )
 
         for album_dir, group in album_dir_groups.items():
             total = len(group) + existing_counts.get(album_dir, 0)
+            import logging
+            logging.getLogger("soundaudit.organizer").debug(
+                "min_album_tracks debug: album_dir=%s source_tracks=%s existing_tracks=%s total=%s min=%s",
+                album_dir, len(group), existing_counts.get(album_dir, 0), total, min_album_tracks,
+            )
             if total < min_album_tracks:
                 for plan in group:
                     plan.status = "skipped"
