@@ -427,6 +427,45 @@ class TestMinAlbumTracks:
         finally:
             organizer._get_tags = original_get_tags
 
+    def test_counts_existing_destination_tracks(self, tmp_path):
+        """Incremental organization: destination already has most of the album."""
+        from soundaudit import organizer
+
+        original_get_tags = organizer._get_tags
+
+        def mock_get_tags(path: Path) -> TrackTags:
+            tags = TrackTags()
+            tags.album = "Test Album"
+            tags.year = 2024
+            tags.album_artist = "Test Artist"
+            tags.artist = "Test Artist"
+            tags.track_number = int(path.stem.split("_")[1])
+            return tags
+
+        organizer._get_tags = mock_get_tags
+        try:
+            src = tmp_path / "source"
+            src.mkdir()
+            out = tmp_path / "output"
+            out.mkdir()
+
+            # Simulate already-organized destination: 2 tracks present
+            dest_album = out / "Test Artist" / "Test Album [2024]"
+            dest_album.mkdir(parents=True)
+            (dest_album / "01. Old Track.flac").write_text("old")
+            (dest_album / "02. Old Track.flac").write_text("old")
+
+            # One new track in source
+            new_file = src / "track_3.flac"
+            new_file.write_text("new")
+
+            # With min=3, the single source track (1) + 2 existing = 3 → allowed
+            plans = plan_organization([new_file], out, min_album_tracks=3)
+            assert plans[0].status == "pending"
+            assert dest_album in plans[0].proposed.parents
+        finally:
+            organizer._get_tags = original_get_tags
+
     def test_mixed_batch_some_skipped(self, tmp_path):
         from soundaudit import organizer
 
