@@ -36,7 +36,7 @@ from soundaudit.analyzer.duplicates import (
 from soundaudit.analyzer.transcode import analyze_library_transcodes
 from soundaudit.config import AppConfig
 from soundaudit.db.store import AcoustidGroup, Database
-from soundaudit.models import HashStrategy
+from soundaudit.models import HashStrategy, TrackTags
 from soundaudit.organizer import execute_organization, plan_organization
 from soundaudit.reporter import MarkdownSection, ReportExporter, infer_format
 from soundaudit.resolver.musicbrainz import ResolvedMetadata
@@ -1542,6 +1542,309 @@ def organize_cmd(
         console.print(f"[dim]Updated {updated} path(s) in database.[/dim]")
 
 
+
+
+
+@app.command("normalize-tags")
+def normalize_tags_cmd(
+    paths: list[str] = typer.Argument(None, help="Directories to scan for inconsistent tags"),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
+    fields: str = typer.Option(
+        "album,album_artist,year,artist",
+        "--fields",
+        help="Comma-separated fields to check and normalize",
+    ),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Write corrected tags to files (default is dry-run preview)",
+    ),
+    min_files: int = typer.Option(
+        2,
+        "--min-files",
+        help="Minimum audio files in a folder before checking consistency",
+        min=1,
+    ),
+) -> None:
+    """Detect and fix inconsistent tags within album folders.
+
+    Example:
+        soundaudit normalize-tags ~/Downloads/new_album
+        soundaudit normalize-tags ~/Music --apply --fields album,album_artist
+    """
+    from soundaudit.actuator.tags import TagWriteError, write_tags
+    from soundaudit.analyzer.normalize import scan_folders
+
+    cfg = _load_config(config)
+    selected_fields = tuple(f.strip().lower() for f in fields.split(",") if f.strip())
+
+    scan_paths: list[Path] = []
+    if paths:
+        for raw in paths:
+            p = Path(raw).expanduser().resolve()
+            if not p.exists():
+                console.print(f"[yellow]Skipping missing path: {p}[/yellow]")
+                continue
+            scan_paths.append(p)
+    else:
+        scan_paths = [Path(p).expanduser().resolve() for p in cfg.scan.paths if Path(p).expanduser().exists()]
+
+    if not scan_paths:
+        console.print("[red]No paths to scan.[/red]")
+        raise typer.Exit(1)
+
+    ext_set = {e.lower() for e in cfg.organize.extensions}
+
+    console.print(f"[bold cyan]Scanning {len(scan_paths)} path(s) for tag inconsistencies…[/bold cyan]")
+    results = scan_folders(scan_paths, fields=selected_fields, min_files=min_files, extensions=ext_set)
+
+    if not results:
+        console.print("[green]No inconsistencies found.[/green]")
+        raise typer.Exit(0)
+
+    # Preview table
+    from rich.table import Table
+    table = Table(
+        title="Tag Normalization Preview" + ("" if apply else "  [dim](dry-run)[/dim]"),
+        show_header=True,
+    )
+    table.add_column("File", style="dim", max_width=50)
+    table.add_column("Field", style="yellow")
+    table.add_column("Current", style="red")
+    table.add_column("Proposed", style="green")
+
+    fix_count = 0
+    for folder_result in results:
+        for fix in folder_result.fixes:
+            fix_count += 1
+            table.add_row(
+                str(fix.path),
+                fix.field,
+                str(fix.current) if fix.current is not None else "[dim]—[/dim]",
+                str(fix.proposed) if fix.proposed is not None else "[dim]—[/dim]",
+            )
+
+    console.print(table)
+
+    if not apply:
+        console.print(f"\n[dim]{fix_count} fix(es) pending. Add --apply to write.[/dim]")
+        raise typer.Exit(0)
+
+    # Apply fixes
+    applied = 0
+    errors = 0
+    for folder_result in results:
+        for fix in folder_result.fixes:
+            try:
+                tags = TrackTags()
+                setattr(tags, fix.field, fix.proposed)
+                write_tags(Path(fix.path), tags, fields={fix.field}, backup=True)
+                applied += 1
+            except TagWriteError as exc:
+                console.print(f"[red]Failed[/red] {fix.path}: {exc}")
+                errors += 1
+            except Exception as exc:
+                console.print(f"[red]Failed[/red] {fix.path}: {exc}")
+                errors += 1
+
+    parts = []
+    if applied:
+        parts.append(f"[bold green]{applied} updated[/bold green]")
+    if errors:
+        parts.append(f"[red]{errors} errors[/red]")
+    console.print(f"\nDone. {' | '.join(parts)}")
+
+
+@app.command("standardize-tags")
+def standardize_tags_cmd(
+    paths: list[str] = typer.Argument(None, help="Directories to scan for structural tag issues"),
+    config: Path | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Write corrected tags to files (default is dry-run preview)",
+    ),
+    min_files: int = typer.Option(
+        1,
+        "--min-files",
+        help="Minimum audio files in a folder before checking",
+        min=1,
+    ),
+) -> None:
+    """Standardize FLAC tags for Navidrome compatibility.
+
+    Fixes:
+    - Missing TRACKNUMBER / DISCNUMBER (derived from folder order)
+    - Lowercase Vorbis comment keys → uppercase
+    - Redundant TOTALTRACKS / TOTALDISCS → TRACKTOTAL / DISCTOTAL
+
+    Example:
+        soundaudit standardize-tags ~/Music
+        soundaudit standardize-tags ~/Music --apply
+    """
+    from soundaudit.analyzer.standardize import (
+        apply_standardize,
+        scan_folders_for_standardize,
+    )
+
+    cfg = _load_config(config)
+
+    scan_paths: list[Path] = []
+    if paths:
+        for raw in paths:
+            p = Path(raw).expanduser().resolve()
+            if not p.exists():
+                console.print(f"[yellow]Skipping missing path: {p}[/yellow]")
+                continue
+            scan_paths.append(p)
+    else:
+        scan_paths = [
+            Path(p).expanduser().resolve()
+            for p in cfg.scan.paths
+            if Path(p).expanduser().exists()
+        ]
+
+    if not scan_paths:
+        console.print("[red]No paths to scan.[/red]")
+        raise typer.Exit(1)
+
+    ext_set = {e.lower() for e in cfg.organize.extensions}
+
+    console.print(
+        f"[bold cyan]Scanning {len(scan_paths)} path(s) for tag standardization…[/bold cyan]"
+    )
+    results = scan_folders_for_standardize(
+        scan_paths, extensions=ext_set, min_files=min_files
+    )
+
+    if not results:
+        console.print("[green]No standardization needed.[/green]")
+        raise typer.Exit(0)
+
+    table = Table(
+        title="Tag Standardization Preview" + ("" if apply else "  [dim](dry-run)[/dim]"),
+        show_header=True,
+    )
+    table.add_column("File", style="dim", max_width=50)
+    table.add_column("Field", style="yellow")
+    table.add_column("Current", style="red")
+    table.add_column("Proposed", style="green")
+
+    fix_count = 0
+    for folder_result in results:
+        for fix in folder_result.fixes:
+            fix_count += 1
+            table.add_row(
+                str(fix.path),
+                fix.field,
+                str(fix.current) if fix.current is not None else "[dim]—[/dim]",
+                str(fix.proposed),
+            )
+
+    console.print(table)
+
+    if not apply:
+        console.print(f"\n[dim]{fix_count} fix(es) pending. Add --apply to write.[/dim]")
+        raise typer.Exit(0)
+
+    applied = 0
+    errors = 0
+    for folder_result in results:
+        for fix in folder_result.fixes:
+            try:
+                apply_standardize(Path(fix.path), backup=True)
+                applied += 1
+            except Exception as exc:
+                console.print(f"[red]Failed[/red] {fix.path}: {exc}")
+                errors += 1
+
+    parts = []
+    if applied:
+        parts.append(f"[bold green]{applied} updated[/bold green]")
+    if errors:
+        parts.append(f"[red]{errors} errors[/red]")
+    console.print(f"\nDone. {' | '.join(parts)}")
+
+
+@app.command("inspect-tags")
+def inspect_tags_cmd(
+    path: str = typer.Argument(..., help="Audio file to inspect"),
+) -> None:
+    """Dump every raw tag field in an audio file.
+
+    Useful for diagnosing why Navidrome (or another player) sees 0 track numbers
+    while SoundAudit shows the correct value.
+    """
+    from mutagen.aac import AAC
+    from mutagen.aiff import AIFF
+    from mutagen.apev2 import APEv2File
+    from mutagen.flac import FLAC
+    from mutagen.mp3 import MP3
+    from mutagen.mp4 import MP4
+    from mutagen.oggvorbis import OggVorbis
+    from mutagen.wave import WAVE
+
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        console.print(f"[red]File not found: {p}[/red]")
+        raise typer.Exit(1)
+
+    suffix = p.suffix.lower()
+    mutagen_map = {
+        ".flac": FLAC,
+        ".mp3": MP3,
+        ".m4a": MP4,
+        ".ogg": OggVorbis,
+        ".wav": WAVE,
+        ".ape": APEv2File,
+        ".wv": APEv2File,
+        ".aiff": AIFF,
+        ".aac": AAC,
+    }
+    cls = mutagen_map.get(suffix)
+    if cls is None:
+        console.print(f"[red]Unsupported extension: {suffix}[/red]")
+        raise typer.Exit(1)
+
+    audio = cls(str(p))
+    table = Table(
+        title=f"Raw tags — {p.name}",
+        show_header=True,
+    )
+    table.add_column("Field", style="cyan")
+    table.add_column("Raw value", style="yellow")
+
+    # Collect all tags
+    items: list[tuple[str, str]] = []
+    if hasattr(audio, "tags") and audio.tags:
+        if suffix == ".mp3":
+            for fid, frame in audio.tags.items():  # type: ignore[union-attr]
+                items.append((fid, str(frame)))
+        elif suffix == ".m4a":
+            for k, v in audio.items():  # type: ignore[union-attr]
+                items.append((k, str(v)))
+        else:
+            for k, v in audio.items():  # type: ignore[union-attr]
+                items.append((k, str(v)))
+    else:
+        console.print("[yellow]No tags found in file.[/yellow]")
+        raise typer.Exit(0)
+
+    # Sort, but push track/disc fields to the top
+    def _sort_key(item: tuple[str, str]) -> tuple[int, str]:
+        k = item[0].lower()
+        priority = 0
+        if "track" in k or "trck" in k:
+            priority = -2
+        elif "disc" in k or "tpos" in k:
+            priority = -1
+        return (priority, item[0])
+
+    for k, v in sorted(items, key=_sort_key):
+        style = "bold" if "track" in k.lower() or "disc" in k.lower() else ""
+        table.add_row(k, v, style=style)
+
+    console.print(table)
 
 
 def main() -> None:

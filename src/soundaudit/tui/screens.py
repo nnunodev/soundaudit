@@ -48,9 +48,10 @@ from soundaudit.analyzer.duplicates import (
     find_duplicate_groups,
     write_duplicate_groups,
 )
+from soundaudit.analyzer.normalize import scan_folders
 from soundaudit.analyzer.transcode import analyze_library_transcodes
 from soundaudit.db.store import AcoustidGroup, Database
-from soundaudit.models import FileInfo
+from soundaudit.models import FileInfo, TrackTags
 from soundaudit.resolver.musicbrainz import MusicBrainzResolver
 from soundaudit.scanner.walker import discover_files
 
@@ -63,12 +64,14 @@ class DashboardScreen(Screen[None]):
         ("s", "scan", "Scan"),
         ("r", "report", "Report"),
         ("f", "fix", "Fix Tags"),
+        ("n", "normalize", "Normalize Tags"),
+        ("S", "standardize", "Standardize Tags"),
         ("o", "organize", "Navidrome Org"),
         ("R", "reset", "Reset DB"),
     ]
 
     NAV_IDS: ClassVar[list[str]] = [
-        "btn-scan", "btn-report", "btn-fix", "btn-organize", "btn-reset", "btn-quit"
+        "btn-scan", "btn-report", "btn-fix", "btn-normalize", "btn-standardize", "btn-organize", "btn-reset", "btn-quit"
     ]
     _nav_index: reactive[int] = reactive(0)
 
@@ -81,12 +84,14 @@ class DashboardScreen(Screen[None]):
             yield Static("Loading stats...", id="stats")
             yield Static("─" * 40, id="dash-sep")
             with Horizontal(id="actions-row"):
-                yield Static("▸ Scan       [dim]s[/dim]", id="btn-scan", classes="nav-item")
-                yield Static("▸ Reports    [dim]r[/dim]", id="btn-report", classes="nav-item")
-                yield Static("▸ Fix Tags   [dim]f[/dim]", id="btn-fix", classes="nav-item")
-                yield Static("▸ Navidrome  [dim]o[/dim]", id="btn-organize", classes="nav-item")
-                yield Static("▸ Reset DB   [dim]R[/dim]", id="btn-reset", classes="nav-item")
-                yield Static("▸ Quit       [dim]q[/dim]", id="btn-quit", classes="nav-item")
+                yield Static("▸ Scan        [dim]s[/dim]", id="btn-scan", classes="nav-item")
+                yield Static("▸ Reports     [dim]r[/dim]", id="btn-report", classes="nav-item")
+                yield Static("▸ Fix Tags    [dim]f[/dim]", id="btn-fix", classes="nav-item")
+                yield Static("▸ Normalize   [dim]n[/dim]", id="btn-normalize", classes="nav-item")
+                yield Static("▸ Standardize [dim]S[/dim]", id="btn-standardize", classes="nav-item")
+                yield Static("▸ Navidrome   [dim]o[/dim]", id="btn-organize", classes="nav-item")
+                yield Static("▸ Reset DB    [dim]R[/dim]", id="btn-reset", classes="nav-item")
+                yield Static("▸ Quit        [dim]q[/dim]", id="btn-quit", classes="nav-item")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -132,6 +137,10 @@ class DashboardScreen(Screen[None]):
             self.action_report()
         elif wid == "btn-fix":
             self.action_fix()
+        elif wid == "btn-normalize":
+            self.action_normalize()
+        elif wid == "btn-standardize":
+            self.action_standardize()
         elif wid == "btn-organize":
             self.action_organize()
         elif wid == "btn-reset":
@@ -307,6 +316,10 @@ class DashboardScreen(Screen[None]):
             self.action_report()
         elif widget_id == "btn-fix":
             self.action_fix()
+        elif widget_id == "btn-normalize":
+            self.action_normalize()
+        elif widget_id == "btn-standardize":
+            self.action_standardize()
         elif widget_id == "btn-organize":
             self.action_organize()
         elif widget_id == "btn-reset":
@@ -348,6 +361,12 @@ class DashboardScreen(Screen[None]):
 
     def action_fix(self) -> None:
         self.app.push_screen(FixTagsScreen())
+
+    def action_normalize(self) -> None:
+        self.app.push_screen(NormalizeTagsScreen())
+
+    def action_standardize(self) -> None:
+        self.app.push_screen(StandardizeTagsScreen())
 
     def action_organize(self) -> None:
         self.app.push_screen("organize")
@@ -3025,6 +3044,377 @@ class FixTagsRunScreen(Screen[None]):
         self.app.exit()
 
 
+class StandardizeTagsScreen(Screen[None]):
+    """Tag standardization screen — fixes structural tag issues for Navidrome.
+
+    - Missing TRACKNUMBER / DISCNUMBER (derived from folder file order)
+    - Lowercase Vorbis comment keys → uppercase
+    - Redundant TOTALTRACKS / TOTALDISCS → TRACKTOTAL / DISCTOTAL
+    """
+
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
+        ("q", "quit", "Quit"),
+        ("escape", "back", "Back"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="standardize-screen"):
+            yield Static("[b]Standardize Tags[/b]  [dim]esc = back[/dim]", id="std-title")
+            yield Static(
+                "[dim]Fixes missing track/disc numbers, uppercase keys, redundant totals[/dim]",
+                id="std-hint",
+            )
+            with Vertical(id="std-path-list"):
+                yield Static("[dim]Source paths[/dim]", id="std-path-label")
+            yield Static("", id="std-current")
+            yield RichLog(id="std-log", markup=True)
+            with Horizontal(id="std-stats"):
+                yield Static("Folders: 0", id="std-stat-folders")
+                yield Static("Files: 0", id="std-stat-files")
+                yield Static("Applied: 0", id="std-stat-applied")
+                yield Static("Errors: 0", id="std-stat-errors")
+            with Horizontal(id="std-actions"):
+                yield Static("Start", id="btn-std-start", classes="scan-link")
+                yield Static("Stop", id="btn-std-stop", classes="scan-link dimmed")
+                yield Static("Back", id="btn-std-back", classes="scan-link")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        app: Any = self.app
+        cfg = app.get_config()
+        full_paths = [str(p) for p in cfg.scan.paths]
+        short_paths = ReportScreen._shorten_paths(full_paths)
+        self._path_map: dict[str, tuple[str, str]] = {}
+        self._path_selected: dict[str, bool] = {}
+        self._path_ids: list[str] = []
+        self._path_focus_idx: int = 0
+        self._action_focus_idx: int = 0
+        self._focus_group: str = "paths"
+        self._is_running = False
+
+        path_list = self.query_one("#std-path-list", Vertical)
+        for idx, (full, short) in enumerate(zip(full_paths, short_paths, strict=False)):
+            pid = f"std-path-{idx}"
+            self._path_map[pid] = (full, short)
+            self._path_selected[pid] = True
+            self._path_ids.append(pid)
+            path_list.mount(
+                Static(
+                    f"[green]✓[/green] {short}",
+                    id=pid,
+                    classes="path-item checked",
+                )
+            )
+
+        path_list.mount(Static("", id="std-sep-options"))
+        self._opt_ids = ["std-dryrun"]
+        self._opt_selected: dict[str, bool] = {"std-dryrun": True}
+        path_list.mount(
+            Static(
+                "[green]✓[/green] Dry-run  [dim]preview only[/dim]",
+                id="std-dryrun",
+                classes="path-item checked",
+            )
+        )
+        self._path_ids.append("std-dryrun")
+
+        for sid in ("std-path-label", "std-sep-options"):
+            node = self.query_one(f"#{sid}", Static)
+            if node:
+                node.can_focus = False
+        for pid in self._path_ids:
+            self.query_one(f"#{pid}", Static).can_focus = False
+        for bid in ("btn-std-start", "btn-std-stop", "btn-std-back"):
+            self.query_one(f"#{bid}", Static).can_focus = False
+        self.query_one("#std-log", RichLog).can_focus = True
+        self.query_one("#std-title", Static).can_focus = True
+        self.query_one("#std-title", Static).focus()
+        self._draw_focus()
+        log = self.query_one("#std-log", RichLog)
+        log.write("Tag standardization for Navidrome compatibility.")
+        log.write("↑↓ move, Enter/Space toggle, Tab = actions, g = focus log.")
+        log.write("Fixes: missing TRACKNUMBER/DISCNUMBER, lowercase keys, redundant totals.")
+
+    def _draw_focus(self) -> None:
+        for pid in self._path_ids:
+            self.query_one(f"#{pid}", Static).remove_class("focused-nav")
+        for bid in ("btn-std-start", "btn-std-stop", "btn-std-back"):
+            self.query_one(f"#{bid}", Static).remove_class("focused-nav")
+        if self._focus_group == "paths":
+            pid = self._path_ids[self._path_focus_idx]
+            self.query_one(f"#{pid}", Static).add_class("focused-nav")
+        else:
+            bids = ["btn-std-start", "btn-std-stop", "btn-std-back"]
+            bid = bids[self._action_focus_idx]
+            self.query_one(f"#{bid}", Static).add_class("focused-nav")
+
+    def _refocus_path(self, delta: int) -> None:
+        self._path_focus_idx = max(0, min(len(self._path_ids) - 1, self._path_focus_idx + delta))
+        self._focus_group = "paths"
+        self._draw_focus()
+        pid = self._path_ids[self._path_focus_idx]
+        node = self.query_one(f"#{pid}", Static)
+        self.query_one("#std-path-list", Vertical).scroll_to_widget(node)
+
+    def _refocus_action(self, delta: int) -> None:
+        self._action_focus_idx = max(0, min(2, self._action_focus_idx + delta))
+        self._focus_group = "actions"
+        self._draw_focus()
+
+    def _toggle_path(self, pid: str) -> None:
+        if pid == "std-dryrun":
+            was = self._opt_selected[pid]
+            self._opt_selected[pid] = not was
+            checked = self._opt_selected[pid]
+            node = self.query_one(f"#{pid}", Static)
+            label = "Dry-run  [dim]preview only[/dim]"
+            if checked:
+                node.update(f"[green]✓[/green] {label}")
+                node.add_class("checked")
+                node.remove_class("unchecked")
+            else:
+                node.update(f"[red]✗[/red] {label}")
+                node.remove_class("checked")
+                node.add_class("unchecked")
+            return
+
+        full, short = self._path_map[pid]
+        was = self._path_selected[pid]
+        self._path_selected[pid] = not was
+        checked = self._path_selected[pid]
+        node = self.query_one(f"#{pid}", Static)
+        if checked:
+            node.update(f"[green]✓[/green] {short}")
+            node.add_class("checked")
+            node.remove_class("unchecked")
+        else:
+            node.update(f"[red]✗[/red] {short}")
+            node.add_class("unchecked")
+            node.remove_class("checked")
+
+    def on_key(self, event) -> None:
+        key = event.key
+        focused_wid = self.focused.id if self.focused else None
+        is_log_focused = focused_wid == "std-log"
+
+        if is_log_focused and key in ("up", "down", "pageup", "pagedown"):
+            log = self.query_one("#std-log", RichLog)
+            if key == "up":
+                log.scroll_up()
+            elif key == "down":
+                log.scroll_down()
+            elif key == "pageup":
+                log.scroll_page_up()
+            elif key == "pagedown":
+                log.scroll_page_down()
+            event.stop()
+            return
+
+        if key in ("up", "k"):
+            if self._focus_group == "paths":
+                self._refocus_path(-1)
+            event.stop()
+        elif key in ("down", "j"):
+            if self._focus_group == "paths":
+                self._refocus_path(1)
+            event.stop()
+        elif key == "tab":
+            if self._focus_group == "paths":
+                self._focus_group = "actions"
+            elif self._focus_group == "actions":
+                self._focus_group = "log"
+                self.query_one("#std-log", RichLog).focus()
+            else:
+                self._focus_group = "paths"
+                self.query_one("#std-log", RichLog).blur()
+            self._draw_focus()
+            event.stop()
+            return
+        elif key in ("left", "h"):
+            if self._focus_group == "actions":
+                self._refocus_action(-1)
+            elif self._focus_group == "log":
+                self._focus_group = "paths"
+                self.query_one("#std-log", RichLog).blur()
+                self._draw_focus()
+            event.stop()
+        elif key in ("right", "l"):
+            if self._focus_group == "actions":
+                self._refocus_action(1)
+            event.stop()
+        elif key in ("enter", "space", "return"):
+            if self._focus_group == "paths":
+                pid = self._path_ids[self._path_focus_idx]
+                self._toggle_path(pid)
+            elif self._focus_group == "actions":
+                bids = ["btn-std-start", "btn-std-stop", "btn-std-back"]
+                bid = bids[self._action_focus_idx]
+                if bid == "btn-std-start" and not self._is_running:
+                    self._start_standardize()
+                elif bid == "btn-std-stop" and self._is_running:
+                    self._set_running(False)
+                    self._log("Cancelling...")
+                elif bid == "btn-std-back" and not self._is_running:
+                    self.app.pop_screen()
+            event.stop()
+        else:
+            return
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id == "btn-std-start" and not self._is_running:
+            self._start_standardize()
+        elif widget_id == "btn-std-stop" and self._is_running:
+            self._set_running(False)
+            self._log("Cancelling...")
+        elif widget_id == "btn-std-back" and not self._is_running:
+            self.app.pop_screen()
+        elif widget_id and widget_id in self._path_ids:
+            self._path_focus_idx = self._path_ids.index(widget_id)
+            self._focus_group = "paths"
+            self._draw_focus()
+            self._toggle_path(widget_id)
+            event.stop()
+
+    def _set_running(self, running: bool) -> None:
+        self._is_running = running
+        start = self.query_one("#btn-std-start", Static)
+        stop = self.query_one("#btn-std-stop", Static)
+        back = self.query_one("#btn-std-back", Static)
+        if running:
+            start.add_class("dimmed")
+            stop.remove_class("dimmed")
+            back.add_class("dimmed")
+        else:
+            start.remove_class("dimmed")
+            stop.add_class("dimmed")
+            back.remove_class("dimmed")
+
+    def _log(self, msg: str) -> None:
+        self.query_one("#std-log", RichLog).write(msg)
+
+    def _set_current(self, msg: str) -> None:
+        self.query_one("#std-current", Static).update(msg)
+
+    def _start_standardize(self) -> None:
+        selected = [
+            self._path_map[pid][0]
+            for pid, sel in self._path_selected.items()
+            if sel
+        ]
+        if not selected:
+            self._log("[yellow]No source paths selected. Toggle at least one path.[/yellow]")
+            return
+        self._set_running(True)
+        self.query_one("#std-log", RichLog).clear()
+        self._log(f"Scanning {len(selected)} path(s) for tag standardization…")
+        dry = self._opt_selected.get("std-dryrun", True)
+        self._log(f"Mode: {'dry-run preview' if dry else 'write to files'}")
+        self.run_worker(self._standardize_worker, exclusive=True, thread=True)
+
+    def _standardize_worker(self) -> None:
+        app: Any = self.app
+        selected = [
+            self._path_map[pid][0]
+            for pid, sel in self._path_selected.items()
+            if sel
+        ]
+        dry_run = self._opt_selected.get("std-dryrun", True)
+
+        from soundaudit.analyzer.standardize import (
+            apply_standardize,
+            scan_folders_for_standardize,
+        )
+
+        try:
+            results = scan_folders_for_standardize(
+                [Path(p) for p in selected],
+                extensions={".flac"},
+                min_files=1,
+            )
+            total_files = sum(len(r.fixes) for r in results)
+            app.call_from_thread(
+                self.query_one("#std-stat-folders", Static).update,
+                f"Folders: {len(results)}"
+            )
+            app.call_from_thread(
+                self.query_one("#std-stat-files", Static).update,
+                f"Files: {total_files}"
+            )
+
+            if not results:
+                app.call_from_thread(self._log, "[green]No standardization needed.[/green]")
+                return
+
+            for folder_result in results:
+                if not self._is_running:
+                    app.call_from_thread(self._log, "[yellow]Cancelled.[/yellow]")
+                    break
+                app.call_from_thread(
+                    self._set_current,
+                    f"{folder_result.folder.name}  ({len(folder_result.fixes)} fix(es))"
+                )
+                for fix in folder_result.fixes:
+                    cur = str(fix.current) if fix.current is not None else "—"
+                    app.call_from_thread(
+                        self._log,
+                        f"  [cyan]{fix.path.name}[/cyan]  {fix.field}: {cur} → {fix.proposed}"
+                    )
+
+            if dry_run:
+                app.call_from_thread(self._log, "")
+                app.call_from_thread(
+                    self._log,
+                    f"[bold]Preview complete.[/bold] {total_files} fix(es) pending. Disable dry-run to write."
+                )
+                return
+
+            applied = 0
+            errors = 0
+            for folder_result in results:
+                if not self._is_running:
+                    app.call_from_thread(self._log, "[yellow]Stopped early.[/yellow]")
+                    break
+                for fix in folder_result.fixes:
+                    try:
+                        if apply_standardize(Path(fix.path), backup=True):
+                            applied += 1
+                    except Exception as exc:
+                        app.call_from_thread(self._log, f"  [red]✗ {fix.path.name}: {exc}[/red]")
+                        errors += 1
+
+            app.call_from_thread(
+                self.query_one("#std-stat-applied", Static).update,
+                f"Applied: {applied}"
+            )
+            app.call_from_thread(
+                self.query_one("#std-stat-errors", Static).update,
+                f"Errors: {errors}"
+            )
+            parts = []
+            if applied:
+                parts.append(f"[bold green]{applied} updated[/bold green]")
+            if errors:
+                parts.append(f"[red]{errors} errors[/red]")
+            app.call_from_thread(self._log, "")
+            app.call_from_thread(self._log, f"Done. {' | '.join(parts)}")
+        except Exception as exc:
+            import traceback
+            app.call_from_thread(self._log, f"[red]CRASH: {exc}[/red]")
+            for line in traceback.format_exc().splitlines():
+                app.call_from_thread(self._log, f"[dim]{line}[/dim]")
+        finally:
+            app.call_from_thread(self._set_running, False)
+            app.call_from_thread(self._set_current, "")
+
+    def action_back(self) -> None:
+        if not self._is_running:
+            self.app.pop_screen()
+
+    def action_quit(self) -> None:
+        self.app.exit()
+
+
 class OrganizeScreen(Screen[None]):
     """Navidrome folder-structure organizer screen.
 
@@ -3107,7 +3497,6 @@ class OrganizeScreen(Screen[None]):
         self.query_one("#organize-title", Static).can_focus = True
         self.query_one("#organize-title", Static).focus()
         # Show output path
-        app: Any = self.app
         cfg = app.get_config()
         out = cfg.organize.output_path or "[red]not set[/red]"
         self.query_one("#organize-output", Static).update(f"[dim]→ {out}[/dim]")
@@ -3430,6 +3819,434 @@ class OrganizeScreen(Screen[None]):
 
     def action_back(self) -> None:
         if not self._is_organizing:
+            self.app.pop_screen()
+
+    def action_quit(self) -> None:
+        self.app.exit()
+
+
+class NormalizeTagsScreen(Screen[None]):
+    """Tag normalization screen — detects inconsistent tags within album
+    folders and proposes / applies fixes.
+    """
+
+    BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
+        ("q", "quit", "Quit"),
+        ("escape", "back", "Back"),
+    ]
+
+    # Which TrackTags fields we can normalize
+    FIELD_IDS: ClassVar[list[str]] = [
+        "fld-album",
+        "fld-album_artist",
+        "fld-year",
+        "fld-artist",
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="normalize-screen"):
+            yield Static("[b]Normalize Tags[/b]  [dim]esc = back[/dim]", id="norm-title")
+            yield Static("[dim]Select paths and fields to check[/dim]", id="norm-hint")
+            with Vertical(id="norm-path-list"):
+                yield Static("[dim]Source paths[/dim]", id="norm-path-label")
+            yield Static("", id="norm-current")
+            yield RichLog(id="norm-log", markup=True)
+            with Horizontal(id="norm-stats"):
+                yield Static("Folders: 0", id="norm-stat-folders")
+                yield Static("Fixes: 0", id="norm-stat-fixes")
+                yield Static("Applied: 0", id="norm-stat-applied")
+                yield Static("Errors: 0", id="norm-stat-errors")
+            with Horizontal(id="norm-actions"):
+                yield Static("Start", id="btn-norm-start", classes="scan-link")
+                yield Static("Stop", id="btn-norm-stop", classes="scan-link dimmed")
+                yield Static("Back", id="btn-norm-back", classes="scan-link")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        app: Any = self.app
+        cfg = app.get_config()
+        full_paths = [str(p) for p in cfg.scan.paths]
+        short_paths = ReportScreen._shorten_paths(full_paths)
+        self._path_map: dict[str, tuple[str, str]] = {}
+        self._path_selected: dict[str, bool] = {}
+        self._path_ids: list[str] = []
+        self._path_focus_idx: int = 0
+        self._action_focus_idx: int = 0
+        self._focus_group: str = "paths"
+        self._is_running = False
+
+        path_list = self.query_one("#norm-path-list", Vertical)
+        for idx, (full, short) in enumerate(zip(full_paths, short_paths, strict=False)):
+            pid = f"norm-path-{idx}"
+            self._path_map[pid] = (full, short)
+            self._path_selected[pid] = True
+            self._path_ids.append(pid)
+            path_list.mount(
+                Static(
+                    f"[green]✓[/green] {short}",
+                    id=pid,
+                    classes="path-item checked",
+                )
+            )
+
+        # Separator
+        path_list.mount(Static("", id="norm-sep-fields"))
+        path_list.mount(Static("[dim]Fields to check[/dim]", id="norm-fields-label"))
+
+        # Field toggles — all checked by default
+        self._field_selected: dict[str, bool] = {}
+        for fid in self.FIELD_IDS:
+            self._field_selected[fid] = True
+            label = fid.replace("fld-", "").replace("_", " ")
+            path_list.mount(
+                Static(
+                    f"[green]✓[/green] {label.title()}",
+                    id=fid,
+                    classes="path-item checked",
+                )
+            )
+            self._path_ids.append(fid)
+
+        # Separator + options
+        path_list.mount(Static("", id="norm-sep-options"))
+        self._opt_ids = ["norm-dryrun"]
+        self._opt_selected: dict[str, bool] = {"norm-dryrun": True}
+        path_list.mount(
+            Static(
+                "[green]✓[/green] Dry-run  [dim]preview only[/dim]",
+                id="norm-dryrun",
+                classes="path-item checked",
+            )
+        )
+        self._path_ids.append("norm-dryrun")
+
+        # Make non-interactive labels non-focusable
+        for sid in ("norm-path-label", "norm-fields-label", "norm-sep-fields", "norm-sep-options"):
+            node = self.query_one(f"#{sid}", Static)
+            if node:
+                node.can_focus = False
+        for pid in self._path_ids:
+            self.query_one(f"#{pid}", Static).can_focus = False
+        for bid in ("btn-norm-start", "btn-norm-stop", "btn-norm-back"):
+            self.query_one(f"#{bid}", Static).can_focus = False
+        self.query_one("#norm-log", RichLog).can_focus = True
+        self.query_one("#norm-title", Static).can_focus = True
+        self.query_one("#norm-title", Static).focus()
+        self._draw_focus()
+        log = self.query_one("#norm-log", RichLog)
+        log.write("Tag normalization. Detects inconsistent tags within album folders.")
+        log.write("↑↓ move, Enter/Space toggle, Tab = actions, g = focus log.")
+
+    def _draw_focus(self) -> None:
+        for pid in self._path_ids:
+            self.query_one(f"#{pid}", Static).remove_class("focused-nav")
+        for bid in ("btn-norm-start", "btn-norm-stop", "btn-norm-back"):
+            self.query_one(f"#{bid}", Static).remove_class("focused-nav")
+        if self._focus_group == "paths":
+            pid = self._path_ids[self._path_focus_idx]
+            self.query_one(f"#{pid}", Static).add_class("focused-nav")
+        else:
+            bids = ["btn-norm-start", "btn-norm-stop", "btn-norm-back"]
+            bid = bids[self._action_focus_idx]
+            self.query_one(f"#{bid}", Static).add_class("focused-nav")
+
+    def _refocus_path(self, delta: int) -> None:
+        self._path_focus_idx = max(0, min(len(self._path_ids) - 1, self._path_focus_idx + delta))
+        self._focus_group = "paths"
+        self._draw_focus()
+        pid = self._path_ids[self._path_focus_idx]
+        node = self.query_one(f"#{pid}", Static)
+        self.query_one("#norm-path-list", Vertical).scroll_to_widget(node)
+
+    def _refocus_action(self, delta: int) -> None:
+        self._action_focus_idx = max(0, min(2, self._action_focus_idx + delta))
+        self._focus_group = "actions"
+        self._draw_focus()
+
+    def _toggle_path(self, pid: str) -> None:
+        if pid in self.FIELD_IDS:
+            was = self._field_selected[pid]
+            self._field_selected[pid] = not was
+            checked = self._field_selected[pid]
+            label = pid.replace("fld-", "").replace("_", " ").title()
+            node = self.query_one(f"#{pid}", Static)
+            if checked:
+                node.update(f"[green]✓[/green] {label}")
+                node.add_class("checked")
+                node.remove_class("unchecked")
+            else:
+                node.update(f"[red]✗[/red] {label}")
+                node.remove_class("checked")
+                node.add_class("unchecked")
+            return
+
+        if pid == "norm-dryrun":
+            was = self._opt_selected[pid]
+            self._opt_selected[pid] = not was
+            checked = self._opt_selected[pid]
+            node = self.query_one(f"#{pid}", Static)
+            label = "Dry-run  [dim]preview only[/dim]"
+            if checked:
+                node.update(f"[green]✓[/green] {label}")
+                node.add_class("checked")
+                node.remove_class("unchecked")
+            else:
+                node.update(f"[red]✗[/red] {label}")
+                node.remove_class("checked")
+                node.add_class("unchecked")
+            return
+
+        # source path toggle
+        full, short = self._path_map[pid]
+        was = self._path_selected[pid]
+        self._path_selected[pid] = not was
+        checked = self._path_selected[pid]
+        node = self.query_one(f"#{pid}", Static)
+        if checked:
+            node.update(f"[green]✓[/green] {short}")
+            node.add_class("checked")
+            node.remove_class("unchecked")
+        else:
+            node.update(f"[red]✗[/red] {short}")
+            node.add_class("unchecked")
+            node.remove_class("checked")
+
+    def on_key(self, event) -> None:
+        key = event.key
+        focused_wid = self.focused.id if self.focused else None
+        is_log_focused = focused_wid == "norm-log"
+
+        if is_log_focused and key in ("up", "down", "pageup", "pagedown"):
+            log = self.query_one("#norm-log", RichLog)
+            if key == "up":
+                log.scroll_up()
+            elif key == "down":
+                log.scroll_down()
+            elif key == "pageup":
+                log.scroll_page_up()
+            elif key == "pagedown":
+                log.scroll_page_down()
+            event.stop()
+            return
+
+        if key in ("up", "k"):
+            if self._focus_group == "paths":
+                self._refocus_path(-1)
+            event.stop()
+        elif key in ("down", "j"):
+            if self._focus_group == "paths":
+                self._refocus_path(1)
+            event.stop()
+        elif key == "tab":
+            if self._focus_group == "paths":
+                self._focus_group = "actions"
+            elif self._focus_group == "actions":
+                self._focus_group = "log"
+                self.query_one("#norm-log", RichLog).focus()
+            else:
+                self._focus_group = "paths"
+                self.query_one("#norm-log", RichLog).blur()
+            self._draw_focus()
+            event.stop()
+            return
+        elif key in ("left", "h"):
+            if self._focus_group == "actions":
+                self._refocus_action(-1)
+            elif self._focus_group == "log":
+                self._focus_group = "paths"
+                self.query_one("#norm-log", RichLog).blur()
+                self._draw_focus()
+            event.stop()
+        elif key in ("right", "l"):
+            if self._focus_group == "actions":
+                self._refocus_action(1)
+            event.stop()
+        elif key in ("enter", "space", "return"):
+            if self._focus_group == "paths":
+                pid = self._path_ids[self._path_focus_idx]
+                self._toggle_path(pid)
+            elif self._focus_group == "actions":
+                bids = ["btn-norm-start", "btn-norm-stop", "btn-norm-back"]
+                bid = bids[self._action_focus_idx]
+                if bid == "btn-norm-start" and not self._is_running:
+                    self._start_normalize()
+                elif bid == "btn-norm-stop" and self._is_running:
+                    self._set_running(False)
+                    self._log("Cancelling...")
+                elif bid == "btn-norm-back" and not self._is_running:
+                    self.app.pop_screen()
+            event.stop()
+        else:
+            return
+
+    def on_click(self, event) -> None:
+        widget_id = getattr(getattr(event, "control", None), "id", None)
+        if widget_id == "btn-norm-start" and not self._is_running:
+            self._start_normalize()
+        elif widget_id == "btn-norm-stop" and self._is_running:
+            self._set_running(False)
+            self._log("Cancelling...")
+        elif widget_id == "btn-norm-back" and not self._is_running:
+            self.app.pop_screen()
+        elif widget_id and widget_id in self._path_ids:
+            self._path_focus_idx = self._path_ids.index(widget_id)
+            self._focus_group = "paths"
+            self._draw_focus()
+            self._toggle_path(widget_id)
+            event.stop()
+
+    def _set_running(self, running: bool) -> None:
+        self._is_running = running
+        start = self.query_one("#btn-norm-start", Static)
+        stop = self.query_one("#btn-norm-stop", Static)
+        back = self.query_one("#btn-norm-back", Static)
+        if running:
+            start.add_class("dimmed")
+            stop.remove_class("dimmed")
+            back.add_class("dimmed")
+        else:
+            start.remove_class("dimmed")
+            stop.add_class("dimmed")
+            back.remove_class("dimmed")
+
+    def _log(self, msg: str) -> None:
+        self.query_one("#norm-log", RichLog).write(msg)
+
+    def _set_current(self, msg: str) -> None:
+        self.query_one("#norm-current", Static).update(msg)
+
+    def _start_normalize(self) -> None:
+        selected = [
+            self._path_map[pid][0]
+            for pid, sel in self._path_selected.items()
+            if sel
+        ]
+        if not selected:
+            self._log("[yellow]No source paths selected. Toggle at least one path.[/yellow]")
+            return
+        active_fields = {
+            fid.replace("fld-", "")
+            for fid, sel in self._field_selected.items()
+            if sel
+        }
+        if not active_fields:
+            self._log("[yellow]No fields selected. Toggle at least one field.[/yellow]")
+            return
+        self._set_running(True)
+        self.query_one("#norm-log", RichLog).clear()
+        self._log(f"Scanning {len(selected)} path(s) for tag inconsistencies…")
+        self._log(f"Fields: {', '.join(sorted(active_fields))}")
+        dry = self._opt_selected.get("norm-dryrun", True)
+        self._log(f"Mode: {'dry-run preview' if dry else 'write to files'}")
+        self.run_worker(self._normalize_worker, exclusive=True, thread=True)
+
+    def _normalize_worker(self) -> None:
+        app: Any = self.app
+        cfg = app.get_config()
+        selected = [
+            self._path_map[pid][0]
+            for pid, sel in self._path_selected.items()
+            if sel
+        ]
+        active_fields = tuple(
+            fid.replace("fld-", "")
+            for fid, sel in self._field_selected.items()
+            if sel
+        )
+        dry_run = self._opt_selected.get("norm-dryrun", True)
+        ext_set = {e.lower() for e in cfg.organize.extensions}
+
+        try:
+            results = scan_folders(
+                [Path(p) for p in selected],
+                fields=active_fields,
+                min_files=2,
+                extensions=ext_set,
+            )
+            total_fixes = sum(len(r.fixes) for r in results)
+            app.call_from_thread(
+                self.query_one("#norm-stat-folders", Static).update,
+                f"Folders: {len(results)}"
+            )
+            app.call_from_thread(
+                self.query_one("#norm-stat-fixes", Static).update,
+                f"Fixes: {total_fixes}"
+            )
+
+            if not results:
+                app.call_from_thread(self._log, "[green]No inconsistencies found.[/green]")
+                return
+
+            for folder_result in results:
+                if not self._is_running:
+                    app.call_from_thread(self._log, "[yellow]Cancelled.[/yellow]")
+                    break
+                app.call_from_thread(
+                    self._set_current,
+                    f"{folder_result.folder.name}  ({len(folder_result.fixes)} fix(es))"
+                )
+                for fix in folder_result.fixes:
+                    cur = str(fix.current) if fix.current is not None else "—"
+                    prop = str(fix.proposed) if fix.proposed is not None else "—"
+                    app.call_from_thread(
+                        self._log,
+                        f"  [cyan]{fix.path.name}[/cyan]  {fix.field}: {cur} → {prop}"
+                    )
+
+            if dry_run:
+                app.call_from_thread(self._log, "")
+                app.call_from_thread(
+                    self._log,
+                    f"[bold]Preview complete.[/bold] {total_fixes} fix(es) pending. Disable dry-run to write."
+                )
+                return
+
+            # Apply fixes
+            applied = 0
+            errors = 0
+            for folder_result in results:
+                if not self._is_running:
+                    app.call_from_thread(self._log, "[yellow]Stopped early.[/yellow]")
+                    break
+                for fix in folder_result.fixes:
+                    try:
+                        tags = TrackTags()
+                        setattr(tags, fix.field, fix.proposed)
+                        write_tags(Path(fix.path), tags, fields={fix.field}, backup=True)
+                        applied += 1
+                    except TagWriteError as exc:
+                        app.call_from_thread(self._log, f"  [red]✗ {fix.path.name}: {exc}[/red]")
+                        errors += 1
+                    except Exception as exc:
+                        app.call_from_thread(self._log, f"  [red]✗ {fix.path.name}: {exc}[/red]")
+                        errors += 1
+
+            app.call_from_thread(
+                self.query_one("#norm-stat-applied", Static).update,
+                f"Applied: {applied}"
+            )
+            app.call_from_thread(
+                self.query_one("#norm-stat-errors", Static).update,
+                f"Errors: {errors}"
+            )
+            parts = []
+            if applied:
+                parts.append(f"[bold green]{applied} updated[/bold green]")
+            if errors:
+                parts.append(f"[red]{errors} errors[/red]")
+            app.call_from_thread(self._log, "")
+            app.call_from_thread(self._log, f"Done. {' | '.join(parts)}")
+        except Exception as exc:
+            import traceback
+            app.call_from_thread(self._log, f"[red]CRASH: {exc}[/red]")
+            for line in traceback.format_exc().splitlines():
+                app.call_from_thread(self._log, f"[dim]{line}[/dim]")
+        finally:
+            app.call_from_thread(self._set_running, False)
+            app.call_from_thread(self._set_current, "")
+
+    def action_back(self) -> None:
+        if not self._is_running:
             self.app.pop_screen()
 
     def action_quit(self) -> None:

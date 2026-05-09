@@ -348,8 +348,8 @@ def plan_organization(
     for group in groups.values():
         # Gather explicit album_artists, treating empty/whitespace as missing
         explicit = []
-        for p in group:
-            aa = p.tags.album_artist
+        for member in group:
+            aa = member.tags.album_artist
             if aa and str(aa).strip():
                 explicit.append(str(aa).strip())
 
@@ -357,8 +357,8 @@ def plan_organization(
         # non-empty album tag)?  Loose tracks with no album should not be
         # unified — they fall back to individual artist folders.
         has_real_album = any(
-            p.tags.album and str(p.tags.album).strip() and str(p.tags.album).strip().lower() != "unknown album"
-            for p in group
+            member.tags.album and str(member.tags.album).strip() and str(member.tags.album).strip().lower() != "unknown album"
+            for member in group
         )
 
         if explicit:
@@ -449,7 +449,6 @@ def plan_organization(
             if source_folder_totals.get(src_dir, 0) >= min_album_tracks:
                 continue
             for plan in group:
-                orig = plan.proposed
                 plan.status = "skipped"
                 plan.skip_reason = (
                     f"incomplete album ({total} < {min_album_tracks} tracks). "

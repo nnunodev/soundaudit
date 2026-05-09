@@ -302,7 +302,164 @@ Screen {
     padding: 0 1;
 }
 
-/* Navidrome organize screen */
+/* Normalize tags screen */
+#normalize-screen {
+    width: auto;
+    min-width: 60;
+    max-width: 95vw;
+    height: auto;
+    max-height: 95vh;
+    padding: 0 1;
+}
+
+#norm-title {
+    height: auto;
+    text-align: center;
+    padding: 0 0;
+}
+
+#norm-hint {
+    height: auto;
+    text-align: center;
+    color: $text-muted;
+    padding: 0 0;
+}
+
+#norm-path-list {
+    height: auto;
+    max-height: 8;
+    overflow-y: auto;
+    padding: 0 1;
+    margin: 0 0;
+}
+
+#norm-path-label {
+    height: auto;
+    padding: 0 0;
+    text-align: center;
+    color: $text-muted;
+}
+
+#norm-log {
+    height: 1fr;
+    min-height: 4;
+    padding: 0 1;
+    border: solid $surface-lighten-1;
+}
+
+#norm-stats {
+    height: auto;
+    align: center middle;
+    padding: 0 0;
+}
+
+#norm-stats Static {
+    width: 1fr;
+    height: auto;
+    text-align: center;
+}
+
+#norm-actions {
+    dock: bottom;
+    height: auto;
+    align: center middle;
+    padding: 0 0;
+}
+
+#norm-actions Static {
+    width: auto;
+    min-width: 6;
+    text-align: center;
+    padding: 0 1;
+    height: auto;
+}
+
+#norm-current {
+    height: auto;
+    padding: 0 0;
+    text-align: center;
+    color: $success;
+}
+
+/* Standardize tags screen */
+#standardize-screen {
+    width: auto;
+    min-width: 60;
+    max-width: 95vw;
+    height: auto;
+    max-height: 95vh;
+    padding: 0 1;
+}
+
+#std-title {
+    height: auto;
+    text-align: center;
+    padding: 0 0;
+}
+
+#std-hint {
+    height: auto;
+    text-align: center;
+    color: $text-muted;
+    padding: 0 0;
+}
+
+#std-path-list {
+    height: auto;
+    max-height: 8;
+    overflow-y: auto;
+    padding: 0 1;
+    margin: 0 0;
+}
+
+#std-path-label {
+    height: auto;
+    padding: 0 0;
+    text-align: center;
+    color: $text-muted;
+}
+
+#std-log {
+    height: 1fr;
+    min-height: 4;
+    padding: 0 1;
+    border: solid $surface-lighten-1;
+}
+
+#std-stats {
+    height: auto;
+    align: center middle;
+    padding: 0 0;
+}
+
+#std-stats Static {
+    width: 1fr;
+    height: auto;
+    text-align: center;
+}
+
+#std-actions {
+    dock: bottom;
+    height: auto;
+    align: center middle;
+    padding: 0 0;
+}
+
+#std-actions Static {
+    width: auto;
+    min-width: 6;
+    text-align: center;
+    padding: 0 1;
+    height: auto;
+}
+
+#std-current {
+    height: auto;
+    padding: 0 0;
+    text-align: center;
+    color: $success;
+}
+
 #organize-screen {
     width: auto;
     min-width: 60;

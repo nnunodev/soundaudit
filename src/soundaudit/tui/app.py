@@ -10,9 +10,11 @@ from soundaudit.config import AppConfig
 from soundaudit.tui.screens import (
     DashboardScreen,
     FixTagsScreen,
+    NormalizeTagsScreen,
     OrganizeScreen,
     ReportScreen,
     ScanScreen,
+    StandardizeTagsScreen,
 )
 
 
@@ -45,6 +47,8 @@ class SoundAuditApp(App[None]):
         "scan": ScanScreen,
         "report": ReportScreen,
         "fix": FixTagsScreen,
+        "normalize": NormalizeTagsScreen,
+        "standardize": StandardizeTagsScreen,
         "organize": OrganizeScreen,
     }
 

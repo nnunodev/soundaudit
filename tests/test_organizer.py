@@ -2,17 +2,14 @@
 
 from pathlib import Path
 
-import pytest
-
+from soundaudit.models import TrackTags
 from soundaudit.organizer import (
-    _apply_template,
+    OrganizePlan,
     _is_compilation_group,
     _normalize_album_artist,
     _strip_featured_artists,
     plan_organization,
-    OrganizePlan,
 )
-from soundaudit.models import TrackTags
 
 
 class TestStripFeaturedArtists:
@@ -545,7 +542,6 @@ class TestMinAlbumTracks:
                 f.write_text("fake")
 
             plans = plan_organization(files, out, min_album_tracks=3)
-            statuses = {p.source.name: p.status for p in plans}
             # All should pass because the source folder has 4 total files (>= 3)
             for p in plans:
                 assert p.status == "pending", f"{p.source.name} was not allowed"
