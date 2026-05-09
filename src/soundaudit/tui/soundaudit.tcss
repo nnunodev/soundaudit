@@ -483,6 +483,14 @@ Screen {
     padding: 0 0;
 }
 
+#repair-desc {
+    height: auto;
+    text-align: center;
+    color: $text;
+    padding: 0 1;
+    margin: 0 0;
+}
+
 #repair-modes {
     height: auto;
     align: center middle;

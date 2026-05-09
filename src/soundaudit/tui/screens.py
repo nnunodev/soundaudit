@@ -3047,6 +3047,15 @@ class RepairTagsScreen(Screen[None]):
     BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("escape", "back", "Back"),
+        ("up", "nav_up", "Up"),
+        ("down", "nav_down", "Down"),
+        ("left", "nav_left", "Left"),
+        ("right", "nav_right", "Right"),
+        ("enter", "activate", "Activate"),
+        ("space", "activate", "Toggle"),
+        ("tab", "next_group", "Next Group"),
+        ("m", "toggle_mode", "Toggle Mode"),
+        ("g", "focus_log", "Focus Log"),
     ]
 
     FIELD_IDS: ClassVar[list[str]] = [
@@ -3056,14 +3065,26 @@ class RepairTagsScreen(Screen[None]):
         "fld-artist",
     ]
 
+    _MODE_DESC: ClassVar[dict[str, str]] = {
+        "normalize": (
+            "Detects inconsistent tags (album, artist, year, album_artist) within the same album folder. "
+            "Uses majority voting to propose fixes for outlier tracks."
+        ),
+        "standardize": (
+            "Fixes structural tag issues for Navidrome compatibility: "
+            "missing TRACKNUMBER/DISCNUMBER, lowercase Vorbis keys, redundant TOTALTRACKS/TOTALDISCS."
+        ),
+    }
+
     def compose(self) -> ComposeResult:
         with Container(id="repair-screen"):
-            yield Static("[b]Repair Tags[/b]  [dim]esc = back[/dim]", id="repair-title")
+            yield Static("[b]Repair Tags[/b]  [dim]esc = back  |  m = toggle mode[/dim]", id="repair-title")
             yield Static("[dim]Normalize inconsistencies or standardize structural tags[/dim]", id="repair-hint")
             # Mode toggle
             with Horizontal(id="repair-modes"):
                 yield Static("[green]▸[/green] Normalize", id="mode-normalize", classes="mode-link active-mode")
                 yield Static("[dim]▸[/dim] Standardize", id="mode-standardize", classes="mode-link")
+            yield Static(self._MODE_DESC["normalize"], id="repair-desc")
             with Vertical(id="repair-path-list"):
                 yield Static("[dim]Source paths[/dim]", id="repair-path-label")
             yield Static("", id="repair-current")
@@ -3149,8 +3170,10 @@ class RepairTagsScreen(Screen[None]):
         self.query_one("#repair-title", Static).focus()
         self._draw_focus()
         log = self.query_one("#repair-log", RichLog)
-        log.write("Tag repair. Choose Normalize (album-folder consistency) or Standardize (structural fixes).")
-        log.write("↑↓ move, Enter/Space toggle, Tab = actions, g = focus log.")
+        log.write("Repair Tags — choose Normalize or Standardize mode (press [b]m[/b] to toggle).")
+        log.write("Normalize: detects inconsistent tags (album, artist, year, album_artist) within album folders via majority voting.")
+        log.write("Standardize: fixes structural issues — missing TRACKNUMBER/DISCNUMBER, lowercase keys, redundant totals.")
+        log.write("↑↓ move, Enter/Space toggle, Tab = actions, m = toggle mode, g = focus log.")
 
     def _draw_focus(self) -> None:
         for pid in self._path_ids:
@@ -3187,11 +3210,13 @@ class RepairTagsScreen(Screen[None]):
         self._mode = "standardize" if self._mode == "normalize" else "normalize"
         n_node = self.query_one("#mode-normalize", Static)
         s_node = self.query_one("#mode-standardize", Static)
+        desc = self.query_one("#repair-desc", Static)
         if self._mode == "normalize":
             n_node.update("[green]▸[/green] Normalize")
             n_node.add_class("active-mode")
             s_node.update("[dim]▸[/dim] Standardize")
             s_node.remove_class("active-mode")
+            desc.update(self._MODE_DESC["normalize"])
             self.query_one("#repair-fields-label", Static).styles.display = "block"
             for fid in self.FIELD_IDS:
                 self.query_one(f"#{fid}", Static).styles.display = "block"
@@ -3201,6 +3226,7 @@ class RepairTagsScreen(Screen[None]):
             s_node.add_class("active-mode")
             n_node.update("[dim]▸[/dim] Normalize")
             n_node.remove_class("active-mode")
+            desc.update(self._MODE_DESC["standardize"])
             self.query_one("#repair-fields-label", Static).styles.display = "none"
             for fid in self.FIELD_IDS:
                 self.query_one(f"#{fid}", Static).styles.display = "none"
@@ -3594,6 +3620,59 @@ class RepairTagsScreen(Screen[None]):
         finally:
             app.call_from_thread(self._set_running, False)
             app.call_from_thread(self._set_current, "")
+
+    def action_nav_up(self) -> None:
+        if self._focus_group == "paths":
+            self._refocus_path(-1)
+
+    def action_nav_down(self) -> None:
+        if self._focus_group == "paths":
+            self._refocus_path(1)
+
+    def action_nav_left(self) -> None:
+        if self._focus_group == "actions":
+            self._refocus_action(-1)
+        elif self._focus_group == "log":
+            self._focus_group = "paths"
+            self.query_one("#repair-log", RichLog).blur()
+            self._draw_focus()
+
+    def action_nav_right(self) -> None:
+        if self._focus_group == "actions":
+            self._refocus_action(1)
+
+    def action_activate(self) -> None:
+        if self._focus_group == "paths":
+            pid = self._path_ids[self._path_focus_idx]
+            self._toggle_path(pid)
+        elif self._focus_group == "actions":
+            bids = ["btn-repair-start", "btn-repair-stop", "btn-repair-back"]
+            bid = bids[self._action_focus_idx]
+            if bid == "btn-repair-start" and not self._is_running:
+                self._start_repair()
+            elif bid == "btn-repair-stop" and self._is_running:
+                self._set_running(False)
+                self._log("Cancelling...")
+            elif bid == "btn-repair-back" and not self._is_running:
+                self.app.pop_screen()
+
+    def action_next_group(self) -> None:
+        if self._focus_group == "paths":
+            self._focus_group = "actions"
+        elif self._focus_group == "actions":
+            self._focus_group = "log"
+            self.query_one("#repair-log", RichLog).focus()
+        else:
+            self._focus_group = "paths"
+            self.query_one("#repair-log", RichLog).blur()
+        self._draw_focus()
+
+    def action_toggle_mode(self) -> None:
+        self._toggle_mode()
+
+    def action_focus_log(self) -> None:
+        self._focus_group = "log"
+        self.query_one("#repair-log", RichLog).focus()
 
     def action_back(self) -> None:
         if not self._is_running:
