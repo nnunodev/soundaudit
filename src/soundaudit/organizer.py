@@ -414,43 +414,33 @@ def plan_organization(
     # If min_album_tracks is set, skip reorganizing albums with fewer than N
     # tracks total (source batch + already present in destination).
     if min_album_tracks > 0:
-        album_counts: Counter[str] = Counter()
+        # Group by actual proposed album directory (respects template layout,
+        # e.g.  "Artist/Album [year]/"  rather than reconstructing from tags)
+        album_dir_groups: dict[Path, list[OrganizePlan]] = defaultdict(list)
         for plan in plans:
-            aa = sanitize_filename(plan.tags.album_artist or "Unknown Artist")
-            album = sanitize_filename(plan.tags.album or "Unknown Album")
-            key = f"{aa}/{album}"
-            album_counts[key] += 1
+            album_dir_groups[plan.proposed.parent].append(plan)
 
-        # Count tracks already in destination so incremental organization works
         _audio_exts = {
             ".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv", ".aiff", ".aac"
         }
-        existing_counts: dict[str, int] = {}
-        for plan in plans:
-            aa = sanitize_filename(plan.tags.album_artist or "Unknown Artist")
-            album = sanitize_filename(plan.tags.album or "Unknown Album")
-            key = f"{aa}/{album}"
-            if key in existing_counts:
-                continue
-            dest_album_dir = output_root / aa / album
+        existing_counts: dict[Path, int] = {}
+        for album_dir in album_dir_groups:
             count = 0
-            if dest_album_dir.exists():
-                for child in dest_album_dir.iterdir():
+            if album_dir.exists():
+                for child in album_dir.iterdir():
                     if child.is_file() and child.suffix.lower() in _audio_exts:
                         count += 1
-            existing_counts[key] = count
+            existing_counts[album_dir] = count
 
-        for plan in plans:
-            aa = sanitize_filename(plan.tags.album_artist or "Unknown Artist")
-            album = sanitize_filename(plan.tags.album or "Unknown Album")
-            key = f"{aa}/{album}"
-            total = album_counts[key] + existing_counts.get(key, 0)
+        for album_dir, group in album_dir_groups.items():
+            total = len(group) + existing_counts.get(album_dir, 0)
             if total < min_album_tracks:
-                plan.status = "skipped"
-                plan.skip_reason = f"incomplete album ({total} < {min_album_tracks} tracks)"
-                # keep proposed pointing to original source so preview/execution
-                # both show it staying put
-                plan.proposed = plan.source
+                for plan in group:
+                    plan.status = "skipped"
+                    plan.skip_reason = f"incomplete album ({total} < {min_album_tracks} tracks)"
+                    # keep proposed pointing to original source so preview/execution
+                    # both show it staying put
+                    plan.proposed = plan.source
 
     return plans + errored
 
