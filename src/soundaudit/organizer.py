@@ -211,11 +211,20 @@ def _is_compilation_group(
     group: list[OrganizePlan],
     *,
     strip_featured: bool = True,
+    compilation_names: set[str] | None = None,
 ) -> bool:
     """Heuristic: does this album group look like a compilation?"""
+    comp_set = compilation_names if compilation_names is not None else _KNOWN_COMP_NAMES
+
     # Explicit compilation flag on any track
     if any(p.tags.compilation for p in group if p.tags.compilation is not None):
         return True
+
+    # Explicit compilation album_artist on any track
+    for plan in group:
+        aa = plan.tags.album_artist
+        if aa and str(aa).strip().lower() in comp_set:
+            return True
 
     artists_counter: Counter[str] = Counter()
     for plan in group:
@@ -354,19 +363,21 @@ def plan_organization(
 
         if explicit:
             chosen = Counter(explicit).most_common(1)[0][0]
-            if has_real_album and _is_compilation_group(group, strip_featured=strip_featured):
+            force_comp = False
+            if has_real_album and _is_compilation_group(group, strip_featured=strip_featured, compilation_names=compilation_names):
                 comp_set = compilation_names if compilation_names is not None else _KNOWN_COMP_NAMES
                 for name, _ in Counter(explicit).most_common():
                     if name.lower() in comp_set:
                         chosen = name
+                        force_comp = True
                         break
             for plan in group:
-                if not plan.tags.album_artist or not str(plan.tags.album_artist).strip():
+                if force_comp or not plan.tags.album_artist or not str(plan.tags.album_artist).strip():
                     plan.tags.album_artist = chosen
             continue
 
         # No explicit album_artist at all.
-        if has_real_album and _is_compilation_group(group, strip_featured=strip_featured):
+        if has_real_album and _is_compilation_group(group, strip_featured=strip_featured, compilation_names=compilation_names):
             for plan in group:
                 if not plan.tags.album_artist or not str(plan.tags.album_artist).strip():
                     plan.tags.album_artist = "Various Artists"
@@ -401,8 +412,7 @@ def plan_organization(
         plan.proposed = output_root / rel
 
     # If min_album_tracks is set, skip reorganizing albums with fewer than N
-    # tracks in this source batch.  Tracks that belong to "sparse" albums stay
-    # where they are (proposed == source).
+    # tracks total (source batch + already present in destination).
     if min_album_tracks > 0:
         album_counts: Counter[str] = Counter()
         for plan in plans:
@@ -410,13 +420,34 @@ def plan_organization(
             album = sanitize_filename(plan.tags.album or "Unknown Album")
             key = f"{aa}/{album}"
             album_counts[key] += 1
+
+        # Count tracks already in destination so incremental organization works
+        _audio_exts = {
+            ".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv", ".aiff", ".aac"
+        }
+        existing_counts: dict[str, int] = {}
         for plan in plans:
             aa = sanitize_filename(plan.tags.album_artist or "Unknown Artist")
             album = sanitize_filename(plan.tags.album or "Unknown Album")
             key = f"{aa}/{album}"
-            if album_counts[key] < min_album_tracks:
+            if key in existing_counts:
+                continue
+            dest_album_dir = output_root / aa / album
+            count = 0
+            if dest_album_dir.exists():
+                for child in dest_album_dir.iterdir():
+                    if child.is_file() and child.suffix.lower() in _audio_exts:
+                        count += 1
+            existing_counts[key] = count
+
+        for plan in plans:
+            aa = sanitize_filename(plan.tags.album_artist or "Unknown Artist")
+            album = sanitize_filename(plan.tags.album or "Unknown Album")
+            key = f"{aa}/{album}"
+            total = album_counts[key] + existing_counts.get(key, 0)
+            if total < min_album_tracks:
                 plan.status = "skipped"
-                plan.skip_reason = f"incomplete album ({album_counts[key]} < {min_album_tracks} tracks)"
+                plan.skip_reason = f"incomplete album ({total} < {min_album_tracks} tracks)"
                 # keep proposed pointing to original source so preview/execution
                 # both show it staying put
                 plan.proposed = plan.source
