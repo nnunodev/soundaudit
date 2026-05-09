@@ -18,6 +18,8 @@ SoundAudit scans your music library, extracts metadata, fingerprints audio, reso
 | Spectral transcode detection (fake-FLAC) | ✅ |
 | MusicBrainz metadata resolver | ✅ |
 | Tag writeback with original backup | ✅ |
+| Tag normalization (album-folder consistency) | ✅ |
+| Tag standardization (Navidrome-compatible keys) | ✅ |
 | Navidrome folder organizer | ✅ |
 | Interactive TUI + JSON/CSV/Markdown export | ✅ |
 
@@ -59,6 +61,17 @@ soundaudit report --duplicates -o dups.json    # export to JSON
 soundaudit organize ~/Downloads --output ~/Music/Navidrome
 soundaudit organize --from-db --output ~/Music/Navidrome --apply --move
 soundaudit organize ~/Downloads --output ~/Music/Navidrome --apply --copy
+
+# Tag Normalization — fix inconsistent tags within album folders
+soundaudit normalize-tags ~/Music                 # preview
+soundaudit normalize-tags ~/Music --apply         # write fixes
+
+# Tag Standardization — uppercase keys, missing track numbers, etc.
+soundaudit standardize-tags ~/Music               # preview
+soundaudit standardize-tags ~/Music --apply       # write fixes
+
+# Inspect raw tags in a file (for debugging player compatibility)
+soundaudit inspect-tags "~/Music/Artist/Album/01.flac"
 
 # Duplicate Cleanup
 soundaudit clean-duplicates                    # preview deletions
