@@ -432,19 +432,32 @@ def plan_organization(
                         count += 1
             existing_counts[album_dir] = count
 
+        # Count total files per source folder for the fallback check below
+        source_folder_totals: dict[str, int] = {}
+        for plan in plans:
+            src_dir = str(plan.source.parent)
+            source_folder_totals[src_dir] = source_folder_totals.get(src_dir, 0) + 1
+
         for album_dir, group in album_dir_groups.items():
             total = len(group) + existing_counts.get(album_dir, 0)
-            if total < min_album_tracks:
-                for plan in group:
-                    orig = plan.proposed
-                    plan.status = "skipped"
-                    plan.skip_reason = (
-                        f"incomplete album ({total} < {min_album_tracks} tracks). "
-                        f"Checked {album_dir} — found {existing_counts.get(album_dir, 0)} existing track(s)."
-                    )
-                    # keep proposed pointing to original source so preview/execution
-                    # both show it staying put
-                    plan.proposed = plan.source
+            if total >= min_album_tracks:
+                continue
+            # Fallback: if the source folder itself contains enough audio
+            # files, assume it is an album folder with some tag inconsistencies
+            # and allow tracks through rather than fragmenting the album.
+            src_dir = str(group[0].source.parent)
+            if source_folder_totals.get(src_dir, 0) >= min_album_tracks:
+                continue
+            for plan in group:
+                orig = plan.proposed
+                plan.status = "skipped"
+                plan.skip_reason = (
+                    f"incomplete album ({total} < {min_album_tracks} tracks). "
+                    f"Checked {album_dir} — found {existing_counts.get(album_dir, 0)} existing track(s)."
+                )
+                # keep proposed pointing to original source so preview/execution
+                # both show it staying put
+                plan.proposed = plan.source
 
     return plans + errored
 

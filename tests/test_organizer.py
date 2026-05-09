@@ -495,9 +495,59 @@ class TestMinAlbumTracks:
                 f.write_text("fake")
 
             plans = plan_organization(album_files + [single_file], out, min_album_tracks=2)
+            # The source folder contains 3 total files (>= min_album_tracks=2),
+            # so the source-folder fallback allows everything through.
             statuses = {p.source.name: p.status for p in plans}
             assert statuses["album_1.flac"] == "pending"
             assert statuses["album_2.flac"] == "pending"
-            assert statuses["single.flac"] == "skipped"
+            assert statuses["single.flac"] == "pending"
+        finally:
+            organizer._get_tags = original_get_tags
+
+    def test_source_folder_fallback_for_tag_inconsistency(self, tmp_path):
+        """Album subfolder: one track has bad tags but folder has enough files."""
+        from soundaudit import organizer
+
+        original_get_tags = organizer._get_tags
+
+        def mock_get_tags(path: Path) -> TrackTags:
+            tags = TrackTags()
+            tags.year = 2024
+            # 3 tracks share proper tags; 1 stray has different tags
+            if "stray" not in path.name:
+                tags.album = "The Raspberry Jams"
+                tags.album_artist = "Jason Becker"
+                tags.artist = "Jason Becker"
+                tags.title = "Good Track"
+            else:
+                tags.album = "Collection"
+                tags.album_artist = "Becker"
+                tags.artist = "Becker"
+                tags.title = "Bad Track"
+            return tags
+
+        organizer._get_tags = mock_get_tags
+        try:
+            src = tmp_path / "new_album"
+            src.mkdir()
+            album_dir = src / "Becker - The Raspberry Jams (1999)"
+            album_dir.mkdir()
+            out = tmp_path / "output"
+            out.mkdir()
+
+            files = [
+                album_dir / "01 - track.flac",
+                album_dir / "02 - track.flac",
+                album_dir / "03 - stray.flac",
+                album_dir / "04 - track.flac",
+            ]
+            for f in files:
+                f.write_text("fake")
+
+            plans = plan_organization(files, out, min_album_tracks=3)
+            statuses = {p.source.name: p.status for p in plans}
+            # All should pass because the source folder has 4 total files (>= 3)
+            for p in plans:
+                assert p.status == "pending", f"{p.source.name} was not allowed"
         finally:
             organizer._get_tags = original_get_tags
