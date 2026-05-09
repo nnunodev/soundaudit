@@ -49,6 +49,15 @@ app = typer.Typer(
     rich_markup_mode="rich",
     help="Music library health scanner and metadata repair tool",
 )
+
+report_app = typer.Typer(
+    name="report",
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+    help="Generate reports from the scan database",
+)
+app.add_typer(report_app, name="report")
+
 console = Console()
 
 
@@ -168,37 +177,90 @@ def scan_cmd(
         DuplicateAnalyzer(database, console=console).run()
 
 
-@app.command("report")
-def report_cmd(
+@report_app.command("summary")
+def report_summary_cmd(
     config: Path | None = typer.Option(None, "--config", "-c"),
     db: Path | None = typer.Option(None, "--db"),
-    missing_tags: bool = typer.Option(False, "--missing-tags", help="Show files with incomplete tags"),
-    duplicates: bool = typer.Option(False, "--duplicates", help="Show duplicate groups"),
-    transcodes: bool = typer.Option(False, "--transcodes", help="Show suspected transcode files"),
-    corrupt: bool = typer.Option(False, "--corrupt", help="Show corrupt/unreadable files"),
-    delete_corrupt: bool = typer.Option(False, "--delete-corrupt", help="Delete corrupt files from disk and database"),
     output: Path | None = typer.Option(None, "--output", "-o", help="Write report to file (infer format from extension: .json, .csv, .md, .txt)"),
     fmt: str | None = typer.Option(None, "--format", help="Override format: json, csv, markdown"),
 ) -> None:
-    """Generate reports from the scan database."""
+    """Summary report of the scan database."""
     cfg = _load_config(config)
     if db:
         cfg.database.path = str(db)
-
     database = Database(str(cfg.database.resolved()))
     out_path = output
     out_format = fmt or (infer_format(out_path) if out_path else "console")
+    _report_summary(database, out_path, out_format)
 
-    if missing_tags:
-        _report_missing_tags(database, out_path, out_format)
-    elif duplicates:
-        _report_duplicates(database, out_path, out_format)
-    elif transcodes:
-        _report_transcodes(database, out_path, out_format)
-    elif corrupt:
-        _report_corrupt(database, out_path, out_format, delete_corrupt)
-    else:
-        _report_summary(database, out_path, out_format)
+
+@report_app.command("missing-tags")
+def report_missing_tags_cmd(
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    db: Path | None = typer.Option(None, "--db"),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Write report to file"),
+    fmt: str | None = typer.Option(None, "--format", help="Override format: json, csv, markdown"),
+) -> None:
+    """Show files with incomplete tags."""
+    cfg = _load_config(config)
+    if db:
+        cfg.database.path = str(db)
+    database = Database(str(cfg.database.resolved()))
+    out_path = output
+    out_format = fmt or (infer_format(out_path) if out_path else "console")
+    _report_missing_tags(database, out_path, out_format)
+
+
+@report_app.command("duplicates")
+def report_duplicates_cmd(
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    db: Path | None = typer.Option(None, "--db"),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Write report to file"),
+    fmt: str | None = typer.Option(None, "--format", help="Override format: json, csv, markdown"),
+) -> None:
+    """Show duplicate groups with keeper recommendations."""
+    cfg = _load_config(config)
+    if db:
+        cfg.database.path = str(db)
+    database = Database(str(cfg.database.resolved()))
+    out_path = output
+    out_format = fmt or (infer_format(out_path) if out_path else "console")
+    _report_duplicates(database, out_path, out_format)
+
+
+@report_app.command("transcodes")
+def report_transcodes_cmd(
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    db: Path | None = typer.Option(None, "--db"),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Write report to file"),
+    fmt: str | None = typer.Option(None, "--format", help="Override format: json, csv, markdown"),
+) -> None:
+    """Show suspected transcode files."""
+    cfg = _load_config(config)
+    if db:
+        cfg.database.path = str(db)
+    database = Database(str(cfg.database.resolved()))
+    out_path = output
+    out_format = fmt or (infer_format(out_path) if out_path else "console")
+    _report_transcodes(database, out_path, out_format)
+
+
+@report_app.command("corrupt")
+def report_corrupt_cmd(
+    config: Path | None = typer.Option(None, "--config", "-c"),
+    db: Path | None = typer.Option(None, "--db"),
+    delete: bool = typer.Option(False, "--delete", help="Delete corrupt files from disk and database"),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Write report to file"),
+    fmt: str | None = typer.Option(None, "--format", help="Override format: json, csv, markdown"),
+) -> None:
+    """Show corrupt/unreadable files."""
+    cfg = _load_config(config)
+    if db:
+        cfg.database.path = str(db)
+    database = Database(str(cfg.database.resolved()))
+    out_path = output
+    out_format = fmt or (infer_format(out_path) if out_path else "console")
+    _report_corrupt(database, out_path, out_format, delete)
 
 
 def _report_summary(
@@ -489,6 +551,9 @@ def duplicates_cmd(
     fmt: str | None = typer.Option(None, "--format", help="Override export format: json, csv, markdown"),
 ) -> None:
     """Find fuzzy duplicates via AcoustID fingerprints and optionally act on them."""
+    console.print(
+        "[yellow]⚠  'duplicates' is deprecated. Use 'analyze --acoustid' followed by 'report duplicates' instead.[/yellow]"
+    )
     cfg = _load_config(config)
     if db:
         cfg.database.path = str(db)
@@ -1572,6 +1637,9 @@ def normalize_tags_cmd(
         soundaudit normalize-tags ~/Downloads/new_album
         soundaudit normalize-tags ~/Music --apply --fields album,album_artist
     """
+    console.print(
+        "[yellow]⚠  'normalize-tags' is deprecated. It will be merged into a unified tag-fixing command in a future release.[/yellow]"
+    )
     from soundaudit.actuator.tags import TagWriteError, write_tags
     from soundaudit.analyzer.normalize import scan_folders
 
@@ -1682,6 +1750,9 @@ def standardize_tags_cmd(
         soundaudit standardize-tags ~/Music
         soundaudit standardize-tags ~/Music --apply
     """
+    console.print(
+        "[yellow]⚠  'standardize-tags' is deprecated. It will be merged into a unified tag-fixing command in a future release.[/yellow]"
+    )
     from soundaudit.analyzer.standardize import (
         apply_standardize,
         scan_folders_for_standardize,

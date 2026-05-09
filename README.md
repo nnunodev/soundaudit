@@ -49,13 +49,16 @@ soundaudit fix --fields artist,album,title,year
 soundaudit fix --apply
 
 # Reports
-soundaudit report                              # summary
-soundaudit report --missing-tags               # incomplete metadata
-soundaudit report --duplicates                 # duplicate groups with keeper recommendations
-soundaudit report --transcodes                 # suspected fake-FLAC
-soundaudit report --corrupt                    # unreadable files
-soundaudit report --corrupt --delete-corrupt   # delete corrupt files
-soundaudit report --duplicates -o dups.json    # export to JSON
+soundaudit report summary                      # summary
+soundaudit report missing-tags                 # incomplete metadata
+soundaudit report duplicates                   # duplicate groups with keeper recommendations
+soundaudit report transcodes                   # suspected fake-FLAC
+soundaudit report corrupt                      # unreadable files
+soundaudit report corrupt --delete             # delete corrupt files
+soundaudit report duplicates -o dups.json      # export to JSON
+
+> **Deprecated:** `soundaudit report --missing-tags` style flags are replaced by sub-commands above.
+> `normalize-tags`, `standardize-tags`, and `duplicates` commands are also deprecated and will be merged into unified commands in v0.2.0.
 
 # Navidrome Organizer (dry-run by default)
 soundaudit organize ~/Downloads --output ~/Music/Navidrome

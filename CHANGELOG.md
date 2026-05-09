@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - Unreleased
+
+### Changed
+- **`report` refactored into sub-commands.** Replaced mutually-exclusive flags (`--missing-tags`, `--duplicates`, etc.) by `report` sub-commands:
+  - `report summary` (default)
+  - `report missing-tags`
+  - `report duplicates`
+  - `report transcodes`
+  - `report corrupt` (replaces `--delete-corrupt` with `corrupt --delete`)
+- Deprecated `duplicates` command with a runtime warning. Users should run `analyze --acoustid` followed by `report duplicates` instead.
+- Deprecated `normalize-tags` and `standardize-tags` commands with runtime warnings. These will be merged into a unified tag-fixing command in a future release.
+
+### Fixed
+- Updated CLI help text and `README.md` examples to use the new `report` sub-commands.
+
 ## [0.1.2] - 2026-05-09
 
 ### Added
