@@ -3360,7 +3360,8 @@ class OrganizeScreen(Screen[None]):
                 app.call_from_thread(self._log, "[yellow]No files to organize.[/yellow]")
                 return
 
-            plans = plan_organization(source_paths, out_root, template=tmpl)
+            min_tracks = cfg.organize.min_album_tracks
+            plans = plan_organization(source_paths, out_root, template=tmpl, min_album_tracks=min_tracks)
 
             ok = sum(1 for pl in plans if pl.status != "error")
             bad = len(plans) - ok
@@ -3385,6 +3386,11 @@ class OrganizeScreen(Screen[None]):
                     already += 1
                 elif plan.status == "skipped":
                     skipped += 1
+                    if plan.skip_reason:
+                        app.call_from_thread(
+                            self._log,
+                            f"[yellow]Skipped[/yellow] {plan.source.name}: {plan.skip_reason}"
+                        )
                 elif plan.status == "error":
                     errors += 1
                     if plan.error:

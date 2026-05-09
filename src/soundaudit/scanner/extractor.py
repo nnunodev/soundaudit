@@ -164,6 +164,15 @@ def _extract_tags(audio) -> TrackTags:
     tags.publisher = _get("LABEL", "TPUB", "\xa9pub")
     tags.composer = _get("COMPOSER", "TCOM", "\xa9wrt")
 
+    # Compilation flag (iTunes / ID3 / Vorbis)
+    comp_val = _get("TCMP", "COMPILATION")
+    if comp_val and comp_val.strip() in ("1", "True", "true", "yes", "Yes"):
+        tags.compilation = True
+    if isinstance(audio, MP4):
+        cpil = audio.get("cpil")
+        if cpil and isinstance(cpil, list) and cpil and cpil[0]:
+            tags.compilation = True
+
     tags.track_number = _parse_track(_get("TRACKNUMBER", "TRCK", "TRACK"))
     tags.track_total = _parse_track_total(_get("TRACKNUMBER", "TRCK", "TRACK", "TRACKTOTAL"))
     tags.disc_number = _parse_track(_get("DISCNUMBER", "TPOS", "DISC"))

@@ -45,6 +45,7 @@ organize:
   output_path: ~/Music/Navidrome
   template: "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
   move: true
+  min_album_tracks: 2
   extensions:
     - .flac
     - .mp3

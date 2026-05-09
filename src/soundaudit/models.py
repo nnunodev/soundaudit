@@ -61,6 +61,9 @@ class TrackTags:
     lyrics: str | None = None
     publisher: str | None = None
     composer: str | None = None
+    # Compilation flag (TCMP / cpil / COMPILATION)
+    compilation: bool = False
+
     # ReplayGain
     replaygain_track_gain: float | None = None
     replaygain_track_peak: float | None = None

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import re
 import shutil
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,20 @@ _RESERVED_NAMES = {
 }
 
 
+# Regex to strip featured-artist suffixes from artist strings.
+# Handles  "Artist feat. Guest", "Artist (feat. Guest)", "Artist [ft. Guest]", etc.
+_FEAT_RE = re.compile(
+    r"\s*[\(\[](?:feat\.?|ft\.?|featuring)[^\)\]]*[\)\]]"
+    r"|\s+(?:feat\.?|ft\.?|featuring)\b.*$",
+    re.IGNORECASE,
+)
+
+_KNOWN_COMP_NAMES = {
+    "various artists", "va", "v.a.", "various",
+    "ost", "soundtrack", "original soundtrack",
+}
+
+
 def sanitize_filename(name: str) -> str:
     """Make a string safe to use as a single path component."""
     if not name:
@@ -55,6 +70,38 @@ def sanitize_filename(name: str) -> str:
     if not safe:
         safe = "Unknown"
     return safe
+
+
+def _strip_featured_artists(name: str) -> str:
+    """Remove 'feat.', 'ft.', 'featuring' suffixes from an artist string."""
+    if not name:
+        return ""
+    clean = _FEAT_RE.sub("", name).strip()
+    # Collapse multiple spaces left behind
+    clean = re.sub(r"\s+", " ", clean)
+    return clean
+
+
+def _normalize_album_artist(
+    album_artist: str | None,
+    artist: str | None,
+    compilation_names: set[str] | None = None,
+    strip_featured: bool = True,
+) -> str:
+    """Return a canonical album-artist string for folder naming."""
+    if album_artist is not None:
+        normalized = album_artist.strip()
+        if normalized:
+            comp_set = compilation_names if compilation_names is not None else _KNOWN_COMP_NAMES
+            if normalized.lower() in comp_set:
+                return "Various Artists"
+            return normalized
+    if artist:
+        if strip_featured:
+            clean = _strip_featured_artists(artist.strip())
+            return clean or "Unknown Artist"
+        return artist.strip() or "Unknown Artist"
+    return "Unknown Artist"
 
 
 def _get_tags(path: Path) -> TrackTags:
@@ -93,6 +140,15 @@ def _get_tags(path: Path) -> TrackTags:
     tags.album = _get("ALBUM", "TALB", "\xa9alb")
     tags.album_artist = _get("ALBUMARTIST", "TPE2", "aART")
     tags.genre = _get("GENRE", "TCON", "\xa9gen")
+
+    # Compilation flag (iTunes / ID3 / Vorbis)
+    comp_val = _get("TCMP", "COMPILATION")
+    if comp_val and comp_val.strip() in ("1", "True", "true", "yes", "Yes"):
+        tags.compilation = True
+    if isinstance(audio, MP4):
+        cpil = audio.get("cpil")
+        if cpil and isinstance(cpil, list) and cpil and cpil[0]:
+            tags.compilation = True
 
     def _parse_int(v: str | None) -> int | None:
         if not v:
@@ -149,6 +205,37 @@ def _get_tags(path: Path) -> TrackTags:
                 tags.track_number = int(m.group(1))
 
     return tags
+
+
+def _is_compilation_group(
+    group: list[OrganizePlan],
+    *,
+    strip_featured: bool = True,
+) -> bool:
+    """Heuristic: does this album group look like a compilation?"""
+    # Explicit compilation flag on any track
+    if any(p.tags.compilation for p in group if p.tags.compilation is not None):
+        return True
+
+    artists_counter: Counter[str] = Counter()
+    for plan in group:
+        a = plan.tags.artist or ""
+        if strip_featured:
+            a = _strip_featured_artists(a)
+        a = a.strip().lower()
+        if a:
+            artists_counter[a] += 1
+
+    total = len(group)
+    distinct = len(artists_counter)
+    if distinct == 0:
+        return False
+    if distinct >= 3:
+        return True
+    if distinct >= 2 and total >= 3:
+        max_share = artists_counter.most_common(1)[0][1] / total
+        return max_share < 0.6
+    return False
 
 
 def _default_template() -> str:
@@ -209,32 +296,132 @@ class OrganizePlan:
     source: Path
     proposed: Path
     tags: TrackTags = field(default_factory=TrackTags)
-    status: str = "pending"  # pending, moved, error
+    status: str = "pending"  # pending, moved, error, skipped, dry-run, already, copied
     error: str | None = None
+    skip_reason: str | None = None
 
 
 def plan_organization(
     paths: list[Path],
     output_root: Path,
     template: str | None = None,
+    compilation_names: set[str] | None = None,
+    strip_featured: bool = True,
+    min_album_tracks: int = 0,
 ) -> list[OrganizePlan]:
     """Build a move plan for every *path* without touching disk."""
     tmpl = template or _default_template()
     plans: list[OrganizePlan] = []
+    errored: list[OrganizePlan] = []
+
+    # First pass: read tags
     for p in paths:
         try:
             tags = _get_tags(p)
         except MutagenError as exc:
-            plans.append(OrganizePlan(source=p, proposed=output_root / p.name, error=str(exc), status="error"))
+            errored.append(OrganizePlan(source=p, proposed=output_root / p.name, error=str(exc), status="error"))
             continue
         except Exception as exc:
-            plans.append(OrganizePlan(source=p, proposed=output_root / p.name, error=str(exc), status="error"))
+            errored.append(OrganizePlan(source=p, proposed=output_root / p.name, error=str(exc), status="error"))
+            continue
+        plans.append(OrganizePlan(source=p, proposed=Path(), tags=tags, status="pending"))
+
+    # Normalize album_artist within albums that sit in the same source folder.
+    # If some tracks in a folder have album_artist and others don't, propagate
+    # the existing value so the album stays together.
+    groups: dict[tuple[str, str, int], list[OrganizePlan]] = defaultdict(list)
+    for plan in plans:
+        album = plan.tags.album or "Unknown Album"
+        year = plan.tags.year or 0
+        key = (str(plan.source.parent), sanitize_filename(album), year)
+        groups[key].append(plan)
+
+    for group in groups.values():
+        # Gather explicit album_artists, treating empty/whitespace as missing
+        explicit = []
+        for p in group:
+            aa = p.tags.album_artist
+            if aa and str(aa).strip():
+                explicit.append(str(aa).strip())
+
+        # Does this group represent a real album (at least one track has a
+        # non-empty album tag)?  Loose tracks with no album should not be
+        # unified — they fall back to individual artist folders.
+        has_real_album = any(
+            p.tags.album and str(p.tags.album).strip() and str(p.tags.album).strip().lower() != "unknown album"
+            for p in group
+        )
+
+        if explicit:
+            chosen = Counter(explicit).most_common(1)[0][0]
+            if has_real_album and _is_compilation_group(group, strip_featured=strip_featured):
+                comp_set = compilation_names if compilation_names is not None else _KNOWN_COMP_NAMES
+                for name, _ in Counter(explicit).most_common():
+                    if name.lower() in comp_set:
+                        chosen = name
+                        break
+            for plan in group:
+                if not plan.tags.album_artist or not str(plan.tags.album_artist).strip():
+                    plan.tags.album_artist = chosen
             continue
 
-        rel = _apply_template(tmpl, tags, p.suffix.lstrip(".").lower())
-        proposed = output_root / rel
-        plans.append(OrganizePlan(source=p, proposed=proposed, tags=tags, status="pending"))
-    return plans
+        # No explicit album_artist at all.
+        if has_real_album and _is_compilation_group(group, strip_featured=strip_featured):
+            for plan in group:
+                if not plan.tags.album_artist or not str(plan.tags.album_artist).strip():
+                    plan.tags.album_artist = "Various Artists"
+            continue
+
+        # Real album but not a compilation — unify under majority artist so
+        # the album doesn't fragment across multiple folders.
+        if has_real_album:
+            artists_counter: Counter[str] = Counter()
+            for plan in group:
+                a = plan.tags.artist or ""
+                if strip_featured:
+                    a = _strip_featured_artists(a)
+                a = a.strip()
+                if a:
+                    artists_counter[a] += 1
+            if artists_counter:
+                chosen_artist = artists_counter.most_common(1)[0][0]
+                for plan in group:
+                    if not plan.tags.album_artist or not str(plan.tags.album_artist).strip():
+                        plan.tags.album_artist = chosen_artist
+
+    # Second pass: build destination paths using normalized album_artist
+    for plan in plans:
+        plan.tags.album_artist = _normalize_album_artist(
+            plan.tags.album_artist,
+            plan.tags.artist,
+            compilation_names=compilation_names,
+            strip_featured=strip_featured,
+        )
+        rel = _apply_template(tmpl, plan.tags, plan.source.suffix.lstrip(".").lower())
+        plan.proposed = output_root / rel
+
+    # If min_album_tracks is set, skip reorganizing albums with fewer than N
+    # tracks in this source batch.  Tracks that belong to "sparse" albums stay
+    # where they are (proposed == source).
+    if min_album_tracks > 0:
+        album_counts: Counter[str] = Counter()
+        for plan in plans:
+            aa = sanitize_filename(plan.tags.album_artist or "Unknown Artist")
+            album = sanitize_filename(plan.tags.album or "Unknown Album")
+            key = f"{aa}/{album}"
+            album_counts[key] += 1
+        for plan in plans:
+            aa = sanitize_filename(plan.tags.album_artist or "Unknown Artist")
+            album = sanitize_filename(plan.tags.album or "Unknown Album")
+            key = f"{aa}/{album}"
+            if album_counts[key] < min_album_tracks:
+                plan.status = "skipped"
+                plan.skip_reason = f"incomplete album ({album_counts[key]} < {min_album_tracks} tracks)"
+                # keep proposed pointing to original source so preview/execution
+                # both show it staying put
+                plan.proposed = plan.source
+
+    return plans + errored
 
 
 def execute_organization(
@@ -251,7 +438,7 @@ def execute_organization(
     actual path used (collision suffixes applied).
     """
     for plan in plans:
-        if plan.status == "error":
+        if plan.status in ("error", "skipped"):
             continue
 
         if not plan.source.exists():
@@ -269,6 +456,7 @@ def execute_organization(
 
         if skip_existing and plan.proposed.exists():
             plan.status = "skipped"
+            plan.skip_reason = "destination already exists"
             continue
 
         dest = _resolve_collision(plan.proposed)

@@ -67,6 +67,11 @@ class OrganizeConfig(BaseModel):
     template: str = "{album_artist}/{album} [{year}]/{disc_track}. {title}.{format}"
     move: bool = True
     extensions: list[str] = Field(default_factory=lambda: [".flac", ".mp3", ".m4a", ".ogg", ".wav", ".ape", ".wv", ".aiff", ".aac"])
+    compilation_artists: list[str] = Field(default_factory=lambda: [
+        "Various Artists", "VA", "V.A.", "Various", "OST", "Soundtrack",
+    ])
+    strip_featured_artists: bool = True
+    min_album_tracks: int = Field(default=2, ge=0, description="Only organize albums with at least this many tracks in the source batch (0 = all)")
 
     @field_validator("output_path")
     @classmethod

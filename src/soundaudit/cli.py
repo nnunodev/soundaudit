@@ -1369,6 +1369,12 @@ def organize_cmd(
     config: Path | None = typer.Option(None, "--config", "-c", help="Path to config YAML"),
     from_db: bool = typer.Option(False, "--from-db", help="Use already-scanned database files instead of filesystem paths"),
     limit: int = typer.Option(0, "--limit", help="Maximum files to process (0 = unlimited)", min=0),
+    min_album_tracks: int = typer.Option(
+        0,
+        "--min-album-tracks",
+        help="Skip reorganizing albums with fewer than N tracks in the source batch (0 = disabled)",
+        min=0,
+    ),
 ) -> None:
     """Rearrange downloads into Navidrome folder structure (Artist/Album/Track).
 
@@ -1443,7 +1449,16 @@ def organize_cmd(
         raise typer.Exit(0)
 
     console.print(f"[bold cyan]Planning Navidrome organization…[/bold cyan]  output: {out_root}")
-    plans = plan_organization(source_paths, out_root, template=tmpl)
+    comp_names = {name.lower() for name in cfg.organize.compilation_artists}
+    min_tracks = min_album_tracks if min_album_tracks > 0 else cfg.organize.min_album_tracks
+    plans = plan_organization(
+        source_paths,
+        out_root,
+        template=tmpl,
+        compilation_names=comp_names,
+        strip_featured=cfg.organize.strip_featured_artists,
+        min_album_tracks=min_tracks,
+    )
 
     # Preview table
     table = Table(title="Navidrome Organization Plan" + ("" if apply else "  [dim](dry-run)[/dim]"), show_header=True)
@@ -1453,10 +1468,18 @@ def organize_cmd(
 
     ok = 0
     bad = 0
+    skipped = 0
     for plan in plans:
         if plan.status == "error":
             bad += 1
             table.add_row(str(plan.source), str(plan.proposed), "[red]error[/red]")
+        elif plan.status == "skipped":
+            skipped += 1
+            short_src = str(plan.source)
+            short_dst = "[dim]—[/dim]"
+            reason = plan.skip_reason or ""
+            status_text = f"[yellow]skipped[/yellow]\n[dim]{reason}[/dim]" if reason else "[yellow]skipped[/yellow]"
+            table.add_row(short_src, short_dst, status_text)
         else:
             ok += 1
             short_src = str(plan.source)
@@ -1464,7 +1487,12 @@ def organize_cmd(
             table.add_row(short_src, short_dst, "[dim]ready[/dim]")
 
     console.print(table)
-    console.print(f"\n{ok} ready, {bad} errors  —  {len(plans)} total")
+    parts = [f"{ok} ready"] if ok else []
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    if bad:
+        parts.append(f"{bad} errors")
+    console.print(f"\n{' | '.join(parts)} — {len(plans)} total")
 
     if not apply:
         console.print("\n[dim]Add --apply to execute these moves.[/dim]")
