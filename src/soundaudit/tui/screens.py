@@ -61,15 +61,16 @@ class DashboardScreen(Screen[None]):
     BINDINGS: ClassVar[Sequence[tuple[str, str, str]]] = [  # type: ignore[assignment]
         ("q", "quit", "Quit"),
         ("s", "scan", "Scan"),
-        ("r", "report", "Report"),
-        ("f", "fix", "Fix Tags (MB)"),
-        ("t", "repair", "Repair Tags"),
-        ("o", "organize", "Navidrome Org"),
+        ("a", "analyze", "Analyze"),
+        ("r", "report", "Reports"),
+        ("f", "fix", "Resolve MB"),
+        ("t", "repair", "Fix Tags"),
+        ("o", "organize", "Organize"),
         ("R", "reset", "Reset DB"),
     ]
 
     NAV_IDS: ClassVar[list[str]] = [
-        "btn-scan", "btn-report", "btn-fix", "btn-repair", "btn-organize", "btn-reset", "btn-quit"
+        "btn-scan", "btn-analyze", "btn-report", "btn-fix", "btn-repair", "btn-organize", "btn-reset", "btn-quit"
     ]
     _nav_index: reactive[int] = reactive(0)
 
@@ -81,14 +82,16 @@ class DashboardScreen(Screen[None]):
             )
             yield Static("Loading stats...", id="stats")
             yield Static("─" * 40, id="dash-sep")
+            with Horizontal(id="workflow-row"):
+                yield Static("▸ Scan       [dim]s[/dim]", id="btn-scan", classes="nav-item")
+                yield Static("▸ Analyze    [dim]a[/dim]", id="btn-analyze", classes="nav-item")
+                yield Static("▸ Reports    [dim]r[/dim]", id="btn-report", classes="nav-item")
+                yield Static("▸ Resolve MB [dim]f[/dim]", id="btn-fix", classes="nav-item")
+                yield Static("▸ Fix Tags   [dim]t[/dim]", id="btn-repair", classes="nav-item")
+                yield Static("▸ Organize   [dim]o[/dim]", id="btn-organize", classes="nav-item")
             with Horizontal(id="actions-row"):
-                yield Static("▸ Scan        [dim]s[/dim]", id="btn-scan", classes="nav-item")
-                yield Static("▸ Reports     [dim]r[/dim]", id="btn-report", classes="nav-item")
-                yield Static("▸ Fix (MB)    [dim]f[/dim]", id="btn-fix", classes="nav-item")
-                yield Static("▸ Repair      [dim]t[/dim]", id="btn-repair", classes="nav-item")
-                yield Static("▸ Navidrome   [dim]o[/dim]", id="btn-organize", classes="nav-item")
-                yield Static("▸ Reset DB    [dim]R[/dim]", id="btn-reset", classes="nav-item")
-                yield Static("▸ Quit        [dim]q[/dim]", id="btn-quit", classes="nav-item")
+                yield Static("▸ Reset DB   [dim]R[/dim]", id="btn-reset", classes="nav-item dim-action")
+                yield Static("▸ Quit       [dim]q[/dim]", id="btn-quit", classes="nav-item dim-action")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -130,6 +133,8 @@ class DashboardScreen(Screen[None]):
         wid = self._nav_sel()
         if wid == "btn-scan":
             self.action_scan()
+        elif wid == "btn-analyze":
+            self.action_analyze()
         elif wid == "btn-report":
             self.action_report()
         elif wid == "btn-fix":
@@ -150,7 +155,7 @@ class DashboardScreen(Screen[None]):
         if not db_path.exists():
             stats_widget.update(
                 "[yellow]No database found.[/yellow]\n"
-                "Use [b]Scan Library[/b] to get started."
+                "Use [b]Scan[/b] to get started."
             )
             return
         try:
@@ -160,18 +165,6 @@ class DashboardScreen(Screen[None]):
             from soundaudit.db.store import DBFile, DuplicateGroup
             with database.session() as s:
                 total = s.query(func.count(DBFile.id)).scalar() or 0
-                flac = (
-                    s.query(func.count(DBFile.id))
-                    .filter(DBFile.format == "flac")
-                    .scalar()
-                    or 0
-                )
-                mp3 = (
-                    s.query(func.count(DBFile.id))
-                    .filter(DBFile.format == "mp3")
-                    .scalar()
-                    or 0
-                )
                 corrupt = (
                     s.query(func.count(DBFile.id))
                     .filter(DBFile.is_corrupt == 1)
@@ -190,39 +183,9 @@ class DashboardScreen(Screen[None]):
                     .scalar()
                     or 0
                 )
-                dup_groups_ignored = (
-                    s.query(func.count(DuplicateGroup.id))
-                    .filter_by(ignored=1)
-                    .scalar()
-                    or 0
-                )
-                dup_files = (
-                    s.query(func.count(DBFile.id))
-                    .filter(DBFile.duplicate_group_id.is_not(None))
-                    .scalar()
-                    or 0
-                )
                 acoustid_groups = (
                     s.query(func.count(AcoustidGroup.id))
                     .filter_by(ignored=0)
-                    .scalar()
-                    or 0
-                )
-                acoustid_groups_ignored = (
-                    s.query(func.count(AcoustidGroup.id))
-                    .filter_by(ignored=1)
-                    .scalar()
-                    or 0
-                )
-                acoustid_files = (
-                    s.query(func.count(DBFile.id))
-                    .filter(DBFile.acoustid_group_id.is_not(None))
-                    .scalar()
-                    or 0
-                )
-                transcode_count = (
-                    s.query(func.count(DBFile.id))
-                    .filter(DBFile.is_transcode == 1)
                     .scalar()
                     or 0
                 )
@@ -235,12 +198,6 @@ class DashboardScreen(Screen[None]):
                     .scalar()
                     or 0
                 )
-                resolved = (
-                    s.query(func.count(DBFile.id))
-                    .filter(DBFile.mb_recording_id.is_not(None))
-                    .scalar()
-                    or 0
-                )
                 pending = (
                     s.query(func.count(DBFile.id))
                     .filter(
@@ -250,53 +207,14 @@ class DashboardScreen(Screen[None]):
                     .scalar()
                     or 0
                 )
-                fixed = (
-                    s.query(func.count(DBFile.id))
-                    .filter(DBFile.tag_fix_date.is_not(None))
-                    .scalar()
-                    or 0
-                )
-            lines = [
-                f"[b]Database[/b]: {db_path.name}",
-                f"[b]Total[/b]   : {total:,}",
-                f"[b]FLAC[/b]    : {flac:,}  [b]MP3[/b]: {mp3:,}",
-                f"[b]Corrupt[/b] : { '[red]' + str(corrupt) + '[/red]' if corrupt else '0'}  [b]Missing[/b]: { '[yellow]' + str(no_tags) + '[/yellow]' if no_tags else '0'}",
-            ]
-            if dup_groups:
-                lines.append(
-                    f"[b]Dups[/b]    : {dup_groups} groups, {dup_files} files"
-                )
-            if dup_groups_ignored:
-                lines.append(
-                    f"[dim]Ignored[/dim] : {dup_groups_ignored} dup groups"
-                )
-            if acoustid_groups:
-                lines.append(
-                    f"[b]AcoustID[/b]: {acoustid_groups} groups, {acoustid_files} files"
-                )
-            if acoustid_groups_ignored:
-                lines.append(
-                    f"[dim]Ignored[/dim] : {acoustid_groups_ignored} AcoustID groups"
-                )
-            if transcode_count:
-                style = "[red]" if transcode_high > 0 else "[yellow]"
-                lines.append(
-                    f"[b]Transc[/b]  : {style}{transcode_count} suspects ({transcode_high} high)[/]"
-                )
-            if resolved:
-                lines.append(
-                    f"[b]Resolved[/b]: {resolved} files with MusicBrainz data"
-                )
-            if pending:
-                lines.append(
-                    f"[b]Pending[/b] : {pending} files awaiting tag write"
-                )
-            if fixed:
-                lines.append(
-                    f"[b]Fixed[/b]   : {fixed} files updated"
-                )
-            stats_widget.update("\n".join(lines))
-            # highlight first nav item on stats load
+            issues = corrupt + no_tags + dup_groups + acoustid_groups + transcode_high + pending
+            line1 = f"[b]{db_path.name}[/b]  —  [b]{total:,}[/b] tracks"
+            if issues:
+                line2 = f"[yellow]{issues} issue(s)[/yellow] need attention"
+            else:
+                line2 = "[green]All clear[/green] — no issues detected"
+            line3 = "[dim]Workflow: [s]can  [a]nalyze  [r]eports  [f]ix MB  [t]ags  [o]rganize[/dim]"
+            stats_widget.update("\n".join([line1, line2, line3]))
             self.query_one(f"#{self._nav_sel()}", Static).add_class("focused-nav")
         except Exception as exc:
             import logging
@@ -307,14 +225,14 @@ class DashboardScreen(Screen[None]):
         widget_id = getattr(getattr(event, "control", None), "id", None)
         if widget_id == "btn-scan":
             self.action_scan()
+        elif widget_id == "btn-analyze":
+            self.action_analyze()
         elif widget_id == "btn-report":
             self.action_report()
         elif widget_id == "btn-fix":
             self.action_fix()
-        elif widget_id == "btn-normalize":
-            self.action_normalize()
-        elif widget_id == "btn-standardize":
-            self.action_standardize()
+        elif widget_id == "btn-repair":
+            self.action_repair()
         elif widget_id == "btn-organize":
             self.action_organize()
         elif widget_id == "btn-reset":
@@ -350,6 +268,9 @@ class DashboardScreen(Screen[None]):
 
     def action_scan(self) -> None:
         self.app.push_screen("scan")
+
+    def action_analyze(self) -> None:
+        self.app.push_screen(AnalyzerChooseScreen())
 
     def action_report(self) -> None:
         self.app.push_screen("report")
@@ -1056,6 +977,19 @@ class ScanScreen(Screen[None]):
             self.query_one("#scan-log", RichLog).write(
                 "Scan complete — nothing new to save."
             )
+        if event.saved > 0:
+            def _on_confirm(confirmed: bool | None) -> None:
+                if confirmed:
+                    self.app.push_screen(AnalyzerChooseScreen())
+            self.app.push_screen(
+                ConfirmDialog(
+                    "Run Analysis?",
+                    f"{event.saved:,} new file(s) scanned.\nRun duplicate/transcode detection now?",
+                    confirm_label="Analyze",
+                    cancel_label="Later",
+                ),
+                _on_confirm,
+            )
 
 
 class ReportScreen(Screen[None]):
@@ -1092,6 +1026,70 @@ class ReportScreen(Screen[None]):
     def on_mount(self) -> None:
         self._load_summary()
         self._tab_focus()
+        self._hide_empty_tabs()
+
+    def _hide_empty_tabs(self) -> None:
+        app: Any = self.app
+        try:
+            database = Database(app.get_db_path())
+            from sqlalchemy import func
+
+            from soundaudit.db.store import DBFile, DuplicateGroup
+            with database.session() as s:
+                has_missing = (
+                    s.query(func.count(DBFile.id))
+                    .filter(
+                        (DBFile.title.is_(None))
+                        | (DBFile.artist.is_(None))
+                        | (DBFile.album.is_(None))
+                    )
+                    .scalar()
+                    or 0
+                ) > 0
+                has_tagstatus = (
+                    s.query(func.count(DBFile.id))
+                    .filter(DBFile.mb_recording_id.is_not(None))
+                    .scalar()
+                    or 0
+                ) > 0
+                has_duplicates = (
+                    s.query(func.count(DuplicateGroup.id))
+                    .filter_by(ignored=0)
+                    .scalar()
+                    or 0
+                ) > 0
+                has_acoustid = (
+                    s.query(func.count(AcoustidGroup.id))
+                    .filter_by(ignored=0)
+                    .scalar()
+                    or 0
+                ) > 0
+                has_transcodes = (
+                    s.query(func.count(DBFile.id))
+                    .filter(DBFile.is_transcode == 1)
+                    .scalar()
+                    or 0
+                ) > 0
+                has_corrupt = (
+                    s.query(func.count(DBFile.id))
+                    .filter(DBFile.is_corrupt == 1)
+                    .scalar()
+                    or 0
+                ) > 0
+            visibility = {
+                "tab-summary": True,
+                "tab-missing": has_missing,
+                "tab-tagstatus": has_tagstatus,
+                "tab-duplicates": has_duplicates,
+                "tab-acoustid": has_acoustid,
+                "tab-transcodes": has_transcodes,
+                "tab-corrupt": has_corrupt,
+            }
+            for tid, visible in visibility.items():
+                widget = self.query_one(f"#{tid}", Static)
+                widget.styles.display = "block" if visible else "none"
+        except Exception:
+            pass
 
     def _tab_focus(self) -> None:
         self.query_one(f"#{self.TAB_IDS[self._tab_index]}", Static).focus()
@@ -1138,12 +1136,19 @@ class ReportScreen(Screen[None]):
         event.stop()
 
     def _tab_move(self, delta: int) -> None:
-        self._tab_index = (self._tab_index + delta) % len(self.TAB_IDS)
+        n = len(self.TAB_IDS)
+        for _ in range(n):
+            self._tab_index = (self._tab_index + delta) % n
+            widget = self.query_one(f"#{self.TAB_IDS[self._tab_index]}", Static)
+            if widget.styles.display != "none":
+                break
         self._tab_focus()
         self._tab_activate()
 
     def _tab_activate(self) -> None:
         tid = self.TAB_IDS[self._tab_index]
+        if self.query_one(f"#{tid}", Static).styles.display == "none":
+            return
         if tid == "tab-summary":
             self._activate_tab("tab-summary")
             self._load_summary()
@@ -1169,6 +1174,9 @@ class ReportScreen(Screen[None]):
     def on_click(self, event) -> None:
         widget_id = getattr(getattr(event, "control", None), "id", None)
         if widget_id in self.TAB_IDS:
+            widget = self.query_one(f"#{widget_id}", Static)
+            if widget.styles.display == "none":
+                return
             self._tab_index = self.TAB_IDS.index(widget_id)
             self._tab_focus()
             self._activate_tab(widget_id)

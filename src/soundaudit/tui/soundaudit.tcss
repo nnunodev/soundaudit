@@ -28,6 +28,21 @@ Screen {
     text-align: center;
 }
 
+#workflow-row {
+    height: auto;
+    align: center middle;
+    padding: 0 0;
+}
+
+#workflow-row Static {
+    width: auto;
+    height: auto;
+    min-width: 12;
+    min-height: 1;
+    text-align: center;
+    padding: 0 1;
+}
+
 #actions-row {
     height: auto;
     align: center middle;
@@ -48,12 +63,20 @@ Screen {
     color: $text;
 }
 .nav-item:hover {
-    background: $surface-lighten-1;
     text-style: bold;
+    color: $text-accent;
 }
 .nav-item.focused-nav {
-    background: $primary-darken-2;
+    background: $accent;
+    color: $text;
     text-style: bold;
+}
+
+.dim-action {
+    color: $text-muted;
+}
+.dim-action:hover {
+    color: $text-accent;
 }
 
 /* Scan screen */
