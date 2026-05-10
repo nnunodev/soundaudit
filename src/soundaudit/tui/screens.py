@@ -2181,10 +2181,11 @@ class ConfirmDialog(ModalScreen[bool]):
     NAV_IDS: ClassVar[list[str]] = ["btn-cancel", "btn-confirm"]
     _nav_index: reactive[int] = reactive(0)
 
-    def __init__(self, title: str, message: str, *, confirm_label: str = "Confirm") -> None:
+    def __init__(self, title: str, message: str, *, confirm_label: str = "Confirm", cancel_label: str = "Cancel") -> None:
         self._title = title
         self._message = message
         self._confirm_label = confirm_label
+        self._cancel_label = cancel_label
         super().__init__()
 
     def compose(self) -> ComposeResult:
@@ -2192,7 +2193,7 @@ class ConfirmDialog(ModalScreen[bool]):
             Static(f"[b]{self._title}[/b]", id="cd-title"),
             Static(self._message, id="cd-message"),
             Horizontal(
-                Static("▸ Cancel", id="btn-cancel", classes="nav-item"),
+                Static(f"▸ {self._cancel_label}", id="btn-cancel", classes="nav-item"),
                 Static(f"▸ {self._confirm_label}", id="btn-confirm", classes="nav-item"),
                 id="cd-actions",
             ),
